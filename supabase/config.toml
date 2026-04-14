@@ -1,0 +1,7 @@
+project_id = "sxnmyccguxzehjfjsnkz"
+
+[functions.krx-proxy]
+verify_jwt = false
+
+[functions.investor-proxy]
+verify_jwt = false
