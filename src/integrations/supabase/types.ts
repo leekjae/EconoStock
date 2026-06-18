@@ -273,6 +273,51 @@ export type Database = {
           },
         ]
       }
+      screening_price_daily: {
+        Row: {
+          close_price: number
+          collected_at: string
+          high_price: number
+          low_price: number
+          market: string
+          open_price: number
+          source: string
+          stock_code: string
+          stock_name: string
+          trade_date: string
+          value: number
+          volume: number
+        }
+        Insert: {
+          close_price?: number
+          collected_at?: string
+          high_price?: number
+          low_price?: number
+          market?: string
+          open_price?: number
+          source?: string
+          stock_code: string
+          stock_name?: string
+          trade_date: string
+          value?: number
+          volume?: number
+        }
+        Update: {
+          close_price?: number
+          collected_at?: string
+          high_price?: number
+          low_price?: number
+          market?: string
+          open_price?: number
+          source?: string
+          stock_code?: string
+          stock_name?: string
+          trade_date?: string
+          value?: number
+          volume?: number
+        }
+        Relationships: []
+      }
       screening_runs: {
         Row: {
           as_of_date: string

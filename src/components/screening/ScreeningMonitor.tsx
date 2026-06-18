@@ -72,7 +72,7 @@ function getErrorMessage(error: unknown) {
 
 function isSchemaMissing(error: unknown) {
   const message = getErrorMessage(error);
-  return /screening_runs|screening_candidates|screening_sync_status|does not exist|could not find the table/i.test(
+  return /screening_runs|screening_candidates|screening_sync_status|screening_price_daily|does not exist|could not find the table/i.test(
     message
   );
 }
@@ -400,8 +400,8 @@ export function ScreeningMonitor() {
             <div>
               <CardTitle className="text-xl">스크리닝 테이블이 아직 없습니다</CardTitle>
               <CardDescription>
-                대시보드를 열기 전에 `screening_runs`, `screening_candidates`, `screening_sync_status` 테이블이 먼저 만들어져
-                있어야 합니다.
+                대시보드를 열기 전에 `screening_runs`, `screening_candidates`, `screening_sync_status`,
+                `screening_price_daily` 테이블이 먼저 만들어져 있어야 합니다.
               </CardDescription>
             </div>
           </div>
@@ -413,7 +413,8 @@ export function ScreeningMonitor() {
           <div className="rounded-2xl border bg-background p-4 text-sm text-muted-foreground">
             <p>1. Supabase SQL Editor에서 스크리닝 마이그레이션을 먼저 적용합니다.</p>
             <p>2. `screening.csv` 또는 `daily_action_sheet_*.csv` 파일을 적재합니다.</p>
-            <p>3. 적재가 끝나면 페이지를 새로고침합니다.</p>
+            <p>3. 이어서 screening price SQLite 동기화를 한 번 실행합니다.</p>
+            <p>4. 적재가 끝나면 페이지를 새로고침합니다.</p>
           </div>
         </CardContent>
       </Card>
@@ -513,7 +514,7 @@ export function ScreeningMonitor() {
         />
         <MetricCard
           title="최근 반영 거래일"
-          value={formatDateLabel(performance.summary.latestReferenceDate || performance.latestBusinessDate)}
+          value={formatDateLabel(performance.summary.latestReferenceDate || performance.latestAvailableTradeDate)}
           note={`최고가 수익률 ${formatPercent(performance.summary.bestReturn)} / 최저가 수익률 ${formatPercent(performance.summary.worstDrawdown)}`}
           loading={performance.isLoading}
           icon={<BookOpenText className="h-4 w-4" />}

@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "import:investor": "node scripts/import-investor-csv.mjs",
-    "import:investor-flow": "python scripts/import-investor-flow-sqlite.py"
+    "import:investor-flow": "python scripts/import-investor-flow-sqlite.py",
+    "import:screening-price": "python scripts/import-screening-price-sqlite.py"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -1,16 +1,14 @@
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { useBusinessDate, useStockRangeData } from "@/hooks/useKrxData";
-import { formatDate, parseNum } from "@/lib/krx-api";
+import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
-import type { StockData } from "@/types/krx";
 
 type ScreeningRun = Tables<"screening_runs">;
 type ScreeningCandidate = Tables<"screening_candidates">;
+type ScreeningPriceDaily = Tables<"screening_price_daily">;
 
-type MarketKey = "stk" | "ksq" | "knx";
-
-const ENTRY_LOOKAHEAD_DAYS = 10;
+const PRICE_PAGE_SIZE = 1000;
 
 export interface ScreeningPerformanceRow extends ScreeningCandidate {
   entryTradeDate: string | null;
@@ -43,7 +41,10 @@ function parseCompactDate(ymd: string) {
 function shiftCompactDate(ymd: string, dayOffset: number) {
   const next = parseCompactDate(ymd);
   next.setDate(next.getDate() + dayOffset);
-  return formatDate(next);
+  const year = String(next.getFullYear());
+  const month = String(next.getMonth() + 1).padStart(2, "0");
+  const day = String(next.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
 }
 
 function normalizeStockCode(stockCode: string) {
@@ -51,100 +52,134 @@ function normalizeStockCode(stockCode: string) {
   return digits.padStart(6, "0");
 }
 
-function normalizeMarket(market: string): MarketKey | null {
-  const normalized = String(market || "").trim().toUpperCase();
-  if (normalized === "KOSPI" || normalized === "STK") return "stk";
-  if (normalized === "KOSDAQ" || normalized === "KSQ") return "ksq";
-  if (normalized === "KONEX" || normalized === "KNX") return "knx";
-  return null;
-}
-
-function buildQuoteMap(rows: StockData[] | undefined) {
-  const map = new Map<string, StockData[]>();
+function buildQuoteMap(rows: ScreeningPriceDaily[] | undefined) {
+  const map = new Map<string, ScreeningPriceDaily[]>();
 
   for (const row of rows ?? []) {
-    const marketKey = normalizeMarket(row.MKT_NM);
-    if (!marketKey) continue;
-    const key = `${marketKey}:${normalizeStockCode(row.ISU_CD)}`;
-    const bucket = map.get(key) ?? [];
+    const stockCode = normalizeStockCode(row.stock_code);
+    if (!stockCode) continue;
+    const bucket = map.get(stockCode) ?? [];
     bucket.push(row);
-    map.set(key, bucket);
+    map.set(stockCode, bucket);
   }
 
   for (const bucket of map.values()) {
-    bucket.sort((left, right) => left.BAS_DD.localeCompare(right.BAS_DD));
+    bucket.sort((left, right) => left.trade_date.localeCompare(right.trade_date));
   }
 
   return map;
 }
 
-export function useScreeningPerformance(run: ScreeningRun | null, candidates: ScreeningCandidate[]) {
-  const {
-    data: latestBusinessDate,
-    isLoading: isLatestDateLoading,
-    isFetching: isLatestDateFetching,
-    error: latestDateError,
-    refetch: refetchLatestDate,
-  } = useBusinessDate();
+async function fetchLatestScreeningPriceDate() {
+  const { data, error } = await supabase
+    .from("screening_price_daily")
+    .select("trade_date")
+    .order("trade_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  const markets = useMemo(() => {
-    const values = Array.from(
+  if (error) {
+    throw error;
+  }
+
+  return data?.trade_date ?? null;
+}
+
+async function fetchScreeningPriceRows(stockCodes: string[], startDate: string, endDate: string) {
+  if (stockCodes.length === 0) {
+    return [] as ScreeningPriceDaily[];
+  }
+
+  const rows: ScreeningPriceDaily[] = [];
+
+  for (let from = 0; ; from += PRICE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("screening_price_daily")
+      .select("*")
+      .in("stock_code", stockCodes)
+      .gte("trade_date", startDate)
+      .lte("trade_date", endDate)
+      .order("stock_code", { ascending: true })
+      .order("trade_date", { ascending: true })
+      .range(from, from + PRICE_PAGE_SIZE - 1);
+
+    if (error) {
+      throw error;
+    }
+
+    const chunk = data ?? [];
+    rows.push(...chunk);
+    if (chunk.length < PRICE_PAGE_SIZE) {
+      break;
+    }
+  }
+
+  return rows;
+}
+
+export function useScreeningPerformance(run: ScreeningRun | null, candidates: ScreeningCandidate[]) {
+  const stockCodes = useMemo(() => {
+    return Array.from(
       new Set(
         candidates
-          .map((candidate) => normalizeMarket(candidate.market))
-          .filter((market): market is MarketKey => market !== null)
+          .map((candidate) => normalizeStockCode(candidate.stock_code))
+          .filter(Boolean)
       )
-    );
-    values.sort();
-    return values;
+    ).sort();
   }, [candidates]);
 
   const entryStartDate = run ? shiftCompactDate(run.as_of_date, 1) : undefined;
-  const entryEndDate = run ? shiftCompactDate(run.as_of_date, ENTRY_LOOKAHEAD_DAYS) : undefined;
-  const enabled = !!run && candidates.length > 0 && markets.length > 0;
 
-  const entryQuery = useStockRangeData(markets, entryStartDate, entryEndDate, enabled);
-  const pathQuery = useStockRangeData(markets, entryStartDate, latestBusinessDate, enabled && !!latestBusinessDate);
+  const latestPriceDateQuery = useQuery({
+    queryKey: ["screening-price-latest-date"],
+    queryFn: fetchLatestScreeningPriceDate,
+    staleTime: 60 * 1000,
+  });
+
+  const latestAvailableTradeDate = latestPriceDateQuery.data ?? null;
+  const priceRowsQuery = useQuery<ScreeningPriceDaily[]>({
+    queryKey: ["screening-price-rows", stockCodes.join(","), entryStartDate, latestAvailableTradeDate],
+    queryFn: () => fetchScreeningPriceRows(stockCodes, entryStartDate!, latestAvailableTradeDate!),
+    enabled: !!run && stockCodes.length > 0 && !!entryStartDate && !!latestAvailableTradeDate,
+    staleTime: 60 * 1000,
+  });
 
   const rows = useMemo<ScreeningPerformanceRow[]>(() => {
     if (!run) {
       return [];
     }
 
-    const entryMap = buildQuoteMap(entryQuery.data?.daily);
-    const pathMap = buildQuoteMap(pathQuery.data?.daily);
+    const quoteMap = buildQuoteMap(priceRowsQuery.data);
 
     return candidates.map((candidate) => {
-      const marketKey = normalizeMarket(candidate.market);
-      const lookupKey = marketKey ? `${marketKey}:${normalizeStockCode(candidate.stock_code)}` : null;
-      const entryRows = lookupKey ? entryMap.get(lookupKey) ?? [] : [];
-      const pathRows = lookupKey ? pathMap.get(lookupKey) ?? [] : [];
-
+      const stockCode = normalizeStockCode(candidate.stock_code);
+      const quoteRows = quoteMap.get(stockCode) ?? [];
       const entryRow =
-        entryRows.find((row) => row.BAS_DD > run.as_of_date && parseNum(row.TDD_OPNPRC) > 0) ?? null;
-      const effectiveRows = entryRow
-        ? pathRows.filter((row) => row.BAS_DD >= entryRow.BAS_DD)
-        : [];
+        quoteRows.find((row) => row.trade_date > run.as_of_date && Number(row.open_price) > 0) ?? null;
+      const effectiveRows = entryRow ? quoteRows.filter((row) => row.trade_date >= entryRow.trade_date) : [];
       const latestRow =
-        [...effectiveRows].reverse().find((row) => parseNum(row.TDD_CLSPRC) > 0) ?? null;
+        [...effectiveRows].reverse().find((row) => Number(row.close_price) > 0) ?? null;
 
       let performanceStatus: ScreeningPerformanceRow["performanceStatus"] = "ready";
       if (!entryRow) {
-        performanceStatus = latestBusinessDate && latestBusinessDate <= run.as_of_date ? "awaiting_entry" : "entry_missing";
+        performanceStatus =
+          latestAvailableTradeDate && latestAvailableTradeDate <= run.as_of_date
+            ? "awaiting_entry"
+            : "entry_missing";
       } else if (!latestRow) {
         performanceStatus = "latest_missing";
       }
 
-      const entryOpenPrice = entryRow ? parseNum(entryRow.TDD_OPNPRC) : null;
-      const latestClosePrice = latestRow ? parseNum(latestRow.TDD_CLSPRC) : null;
+      const entryOpenPrice = entryRow ? Number(entryRow.open_price) : null;
+      const latestClosePrice = latestRow ? Number(latestRow.close_price) : null;
       const highestPrice =
         entryOpenPrice && effectiveRows.length > 0
-          ? effectiveRows.reduce((max, row) => Math.max(max, parseNum(row.TDD_HGPRC)), 0)
+          ? effectiveRows.reduce((max, row) => Math.max(max, Number(row.high_price || 0)), 0)
           : null;
       const lowestPrice =
         entryOpenPrice && effectiveRows.length > 0
           ? effectiveRows.reduce((min, row) => {
-              const low = parseNum(row.TDD_LWPRC);
+              const low = Number(row.low_price || 0);
               if (low <= 0) return min;
               return min === null ? low : Math.min(min, low);
             }, null as number | null)
@@ -158,9 +193,9 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
 
       return {
         ...candidate,
-        entryTradeDate: entryRow?.BAS_DD ?? null,
+        entryTradeDate: entryRow?.trade_date ?? null,
         entryOpenPrice,
-        latestTradeDate: latestRow?.BAS_DD ?? null,
+        latestTradeDate: latestRow?.trade_date ?? null,
         latestClosePrice,
         highestPrice,
         lowestPrice,
@@ -170,7 +205,7 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
         performanceStatus,
       };
     });
-  }, [candidates, entryQuery.data?.daily, latestBusinessDate, pathQuery.data?.daily, run]);
+  }, [candidates, latestAvailableTradeDate, priceRowsQuery.data, run]);
 
   const summary = useMemo<PerformanceSummary>(() => {
     const readyRows = rows.filter((row) => row.returnPct !== null);
@@ -181,7 +216,7 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
       readyRows
         .map((row) => row.latestTradeDate)
         .filter((date): date is string => Boolean(date))
-        .sort((left, right) => right.localeCompare(left))[0] ?? latestBusinessDate ?? null;
+        .sort((left, right) => right.localeCompare(left))[0] ?? latestAvailableTradeDate ?? null;
 
     return {
       monitoredCount: readyRows.length,
@@ -196,25 +231,31 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
       bestReturn:
         readyRows.length === 0
           ? null
-          : readyRows.reduce((max, row) => Math.max(max, Number(row.maxReturnPct ?? Number.NEGATIVE_INFINITY)), Number.NEGATIVE_INFINITY),
+          : readyRows.reduce(
+              (max, row) => Math.max(max, Number(row.maxReturnPct ?? Number.NEGATIVE_INFINITY)),
+              Number.NEGATIVE_INFINITY
+            ),
       worstDrawdown:
         readyRows.length === 0
           ? null
-          : readyRows.reduce((min, row) => Math.min(min, Number(row.maxDrawdownPct ?? Number.POSITIVE_INFINITY)), Number.POSITIVE_INFINITY),
+          : readyRows.reduce(
+              (min, row) => Math.min(min, Number(row.maxDrawdownPct ?? Number.POSITIVE_INFINITY)),
+              Number.POSITIVE_INFINITY
+            ),
     };
-  }, [latestBusinessDate, rows]);
+  }, [latestAvailableTradeDate, rows]);
 
   return {
-    latestBusinessDate: latestBusinessDate ?? null,
+    latestAvailableTradeDate,
     rows,
     summary,
-    isLoading: enabled && (isLatestDateLoading || entryQuery.isLoading || pathQuery.isLoading),
-    isFetching: entryQuery.isFetching || pathQuery.isFetching,
-    isLatestDateFetching,
-    error: latestDateError || entryQuery.error || pathQuery.error,
+    isLoading: !!run && stockCodes.length > 0 && (latestPriceDateQuery.isLoading || priceRowsQuery.isLoading),
+    isFetching: latestPriceDateQuery.isFetching || priceRowsQuery.isFetching,
+    isLatestDateFetching: latestPriceDateQuery.isFetching,
+    error: latestPriceDateQuery.error || priceRowsQuery.error,
     async refetch() {
-      await refetchLatestDate();
-      await Promise.all([entryQuery.refetch(), pathQuery.refetch()]);
+      await latestPriceDateQuery.refetch();
+      await priceRowsQuery.refetch();
     },
   };
 }
