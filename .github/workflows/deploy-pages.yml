@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH }}
-      VITE_SUPABASE_PROJECT_ID: ${{ vars.VITE_SUPABASE_PROJECT_ID }}
-      VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
-      VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_PROJECT_ID: aoikjmfwespkuafemzjc
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_xtsrS1O2HPSCXuU_iKykfA_oi4ZBESp
+      VITE_SUPABASE_URL: https://aoikjmfwespkuafemzjc.supabase.co
     steps:
       - name: Checkout
         uses: actions/checkout@v4
