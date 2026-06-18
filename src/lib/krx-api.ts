@@ -4,6 +4,8 @@ const getProxyUrl = () => {
   return base;
 };
 
+const LIVE_CACHE_MS = 60 * 1000;
+
 const getHeaders = () => {
   const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
   return {
@@ -129,15 +131,27 @@ export function getDirection(val: string | number): "up" | "down" | "flat" {
   return "flat";
 }
 
+function getKstToday(): Date {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const [year, month, day] = formatter.format(now).split("-");
+  return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
 // Find latest business date by trying today and going back
 export async function findLatestBusinessDate(): Promise<string> {
   const cached = localStorage.getItem("krx_latest_biz_date");
   if (cached) {
     const { date, ts } = JSON.parse(cached);
-    if (Date.now() - ts < 6 * 60 * 60 * 1000) return date;
+    if (Date.now() - ts < LIVE_CACHE_MS) return date;
   }
 
-  const today = new Date();
+  const today = getKstToday();
   for (let i = 0; i < 10; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);

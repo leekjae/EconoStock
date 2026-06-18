@@ -13,13 +13,28 @@ interface CacheEntry { data: unknown; ts: number; ttl: number }
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<unknown>>();
 
+const TTL_LIVE = 60 * 1000;             // 1m for current market day
 const TTL_DAILY = 24 * 60 * 60 * 1000;    // 24h for daily trade/index
 const TTL_BASE = 72 * 60 * 60 * 1000;     // 72h for base info
-const TTL_BIZ_DATE = 6 * 60 * 60 * 1000;  // 6h for latest biz date
 
-function getTTL(endpoint: string): number {
+function getKstTodayYmd() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(new Date()).replaceAll("-", "");
+}
+
+function getTTL(endpoint: string, basDd?: string): number {
   if (endpoint.includes("_base_info")) return TTL_BASE;
+  if (basDd && basDd === getKstTodayYmd()) return TTL_LIVE;
   return TTL_DAILY;
+}
+
+function getRangeTTL(startDate: string, endDate: string) {
+  return endDate >= getKstTodayYmd() ? TTL_LIVE : TTL_DAILY;
 }
 
 function getCached(key: string): { data: unknown; status: "HIT" | "MISS" } {
@@ -62,7 +77,7 @@ async function fetchFromKrx(endpoint: string, basDd: string, apiKey: string): Pr
         throw new Error(`KRX API error [${response.status}]: ${text}`);
       }
       const data = await response.json();
-      setCache(cacheKey, data, getTTL(endpoint));
+      setCache(cacheKey, data, getTTL(endpoint, basDd));
       return data;
     } finally {
       inflight.delete(cacheKey);
@@ -336,7 +351,7 @@ serve(async (req) => {
         aggregation = computeAggregation(byIsu);
 
         // Cache the result
-        setCache(aggCacheKey, { daily: allDaily, aggregation }, TTL_DAILY);
+        setCache(aggCacheKey, { daily: allDaily, aggregation }, getRangeTTL(startDate, endDate));
       }
 
       // CSV mode

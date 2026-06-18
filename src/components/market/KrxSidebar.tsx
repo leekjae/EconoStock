@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
-import { ChevronRight, ChevronDown, Search, X, Home, Calculator } from "lucide-react";
+import { useMemo, useState } from "react";
+import { BarChart3, Calculator, ChevronDown, ChevronRight, Home, Search, Sparkles, Users, X } from "lucide-react";
+
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -22,105 +23,65 @@ export interface MenuCategory {
 export const HOME_MENU: MenuItem = {
   id: "home",
   screenId: "HOME",
-  label: "시장현황 대시보드",
+  label: "홈",
   endpoint: "",
   category: "home",
 };
 
+export const SCREENING_MENU: MenuItem = {
+  id: "screening_monitor",
+  screenId: "SCR001",
+  label: "스크리닝 종목",
+  endpoint: "screening",
+  category: "screening",
+};
+
 export const MENU_STRUCTURE: MenuCategory[] = [
   {
-    id: "index",
-    label: "지수",
-    items: [
-      {
-        id: "index_main",
-        screenId: "IDX001",
-        label: "전체지수 단일 시세정보",
-        endpoint: "idx/krx_dd_trd",
-        category: "index",
-      },
-      { id: "index_daily", screenId: "IDX002", label: "개별지수 일별 시세정보", endpoint: "", category: "index_daily" },
-    ],
-  },
-  {
-    id: "stock",
-    label: "주식",
-    items: [
-      {
-        id: "stock_trade",
-        screenId: "STO001",
-        label: "전체종목 단일 매매정보",
-        endpoint: "sto/stk_bydd_trd",
-        category: "stock",
-      },
-      { id: "stock_daily", screenId: "STO003", label: "개별종목 일별 매매정보", endpoint: "", category: "stock_daily" },
-      {
-        id: "stock_base",
-        screenId: "STO002",
-        label: "종목 기본정보",
-        endpoint: "sto/stk_isu_base_info",
-        category: "stock_base",
-      },
-    ],
-  },
-  {
-    id: "product",
-    label: "증권상품(ETF/ETN/ELW)",
-    items: [
-      {
-        id: "product_main",
-        screenId: "ETP001",
-        label: "전체상품 단일 매매정보",
-        endpoint: "etp/etf_bydd_trd",
-        category: "product",
-      },
-      {
-        id: "product_daily",
-        screenId: "ETP002",
-        label: "개별상품 일별 매매정보",
-        endpoint: "",
-        category: "product_daily",
-      },
-    ],
-  },
-  {
-    id: "general",
-    label: "일반상품",
-    items: [
-      {
-        id: "oil",
-        screenId: "GEN001",
-        label: "석유시장 일별매매정보",
-        endpoint: "gen/oil_bydd_trd",
-        category: "general",
-      },
-      {
-        id: "gold",
-        screenId: "GEN002",
-        label: "금시장 일별매매정보",
-        endpoint: "gen/gold_bydd_trd",
-        category: "general",
-      },
-    ],
+    id: "screening",
+    label: "스크리닝 결과",
+    items: [SCREENING_MENU],
   },
   {
     id: "investor",
-    label: "투자자별",
+    label: "투자자별 매매",
     items: [
-      { id: "inv_top", screenId: "INV001", label: "순매수 상위종목", endpoint: "investor", category: "investor" },
+      {
+        id: "inv_top",
+        screenId: "INV001",
+        label: "주체별 누적 순매수",
+        endpoint: "investor",
+        category: "investor",
+      },
     ],
   },
   {
-    id: "pykrx",
-    label: "업종(섹터)별",
-    items: [{ id: "pxi_list", screenId: "PXI001", label: "구성종목", endpoint: "pykrx", category: "pykrx" }],
+    id: "theme",
+    label: "테마",
+    items: [
+      {
+        id: "theme_browser",
+        screenId: "PXI001",
+        label: "테마별 종목",
+        endpoint: "pykrx",
+        category: "pykrx",
+      },
+    ],
   },
 ];
 
 export const TOOLS_MENU: MenuCategory = {
   id: "tools",
   label: "도구",
-  items: [{ id: "avg_calc", screenId: "CAL001", label: "평단가 계산기", endpoint: "", category: "tools" }],
+  items: [
+    {
+      id: "avg_calc",
+      screenId: "CAL001",
+      label: "평단가 계산기",
+      endpoint: "",
+      category: "tools",
+    },
+  ],
 };
 
 interface KrxSidebarProps {
@@ -130,93 +91,114 @@ interface KrxSidebarProps {
 
 export function KrxSidebar({ selectedMenuId, onMenuSelect }: KrxSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(MENU_STRUCTURE.map((c) => c.id)));
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    new Set([...MENU_STRUCTURE.map((category) => category.id), TOOLS_MENU.id]),
+  );
 
-  const toggleCategory = (catId: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(catId)) next.delete(catId);
-      else next.add(catId);
+  const toggleCategory = (categoryId: string) => {
+    setExpandedCategories((previous) => {
+      const next = new Set(previous);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
+      } else {
+        next.add(categoryId);
+      }
       return next;
     });
   };
 
   const filteredMenu = useMemo(() => {
-    if (!searchQuery.trim()) return MENU_STRUCTURE;
-    const q = searchQuery.trim().toLowerCase();
-    return MENU_STRUCTURE.map((cat) => ({
-      ...cat,
-      items: cat.items.filter(
-        (item) => item.label.toLowerCase().includes(q) || item.screenId.toLowerCase().includes(q),
+    if (!searchQuery.trim()) {
+      return MENU_STRUCTURE;
+    }
+
+    const query = searchQuery.trim().toLowerCase();
+    return MENU_STRUCTURE.map((category) => ({
+      ...category,
+      items: category.items.filter(
+        (item) =>
+          item.label.toLowerCase().includes(query) || item.screenId.toLowerCase().includes(query),
       ),
-    })).filter((cat) => cat.items.length > 0);
+    })).filter((category) => category.items.length > 0);
   }, [searchQuery]);
 
   return (
-    <div className="w-56 min-w-[224px] border-r border-border bg-sidebar flex flex-col h-full">
-      {/* Search */}
-      <div className="p-3 border-b border-sidebar-border">
+    <div className="flex h-full w-56 min-w-[224px] flex-col border-r border-border bg-sidebar">
+      <div className="border-b border-sidebar-border p-3">
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="화면번호/화면명 검색"
-            className="h-8 pl-8 pr-8 text-xs bg-sidebar-accent border-sidebar-border"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="메뉴 검색"
+            className="h-8 border-sidebar-border bg-sidebar-accent pl-8 pr-8 text-xs"
           />
 
-          {searchQuery && (
+          {searchQuery ? (
             <button
+              type="button"
               onClick={() => setSearchQuery("")}
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="h-3.5 w-3.5" />
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
-      {/* Tree menu */}
       <ScrollArea className="flex-1">
         <div className="py-1">
-          {/* Home */}
           <button
+            type="button"
             onClick={() => onMenuSelect(HOME_MENU)}
             className={cn(
-              "w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold transition-colors",
+              "flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold transition-colors",
               selectedMenuId === "home"
                 ? "bg-sidebar-primary text-sidebar-primary-foreground"
                 : "text-sidebar-foreground hover:bg-sidebar-accent",
             )}
           >
-            <Home className="w-3.5 h-3.5 shrink-0" />홈
+            <Home className="h-3.5 w-3.5 shrink-0" />
+            {HOME_MENU.label}
           </button>
 
-          {filteredMenu.map((cat) => {
-            const isExpanded = expandedCategories.has(cat.id) || !!searchQuery.trim();
+          {filteredMenu.map((category) => {
+            const isExpanded = expandedCategories.has(category.id) || !!searchQuery.trim();
+            const categoryIcon =
+              category.id === "screening" ? (
+                <BarChart3 className="h-3.5 w-3.5 shrink-0" />
+              ) : category.id === "investor" ? (
+                <Users className="h-3.5 w-3.5 shrink-0" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              );
+
             return (
-              <div key={cat.id}>
+              <div key={category.id}>
                 <button
-                  onClick={() => toggleCategory(cat.id)}
-                  className="w-full flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+                  type="button"
+                  onClick={() => toggleCategory(category.id)}
+                  className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
                 >
                   {isExpanded ? (
-                    <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0" />
                   ) : (
-                    <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0" />
                   )}
-                  {cat.label}
+                  {categoryIcon}
+                  {category.label}
                 </button>
-                {isExpanded && (
+                {isExpanded ? (
                   <div className="pb-1">
-                    {cat.items.map((item) => (
+                    {category.items.map((item) => (
                       <button
                         key={item.id}
+                        type="button"
                         onClick={() => onMenuSelect(item)}
                         className={cn(
-                          "w-full text-left pl-7 pr-3 py-1.5 text-xs transition-colors truncate",
+                          "w-full truncate px-3 py-1.5 pl-7 pr-3 text-left text-xs transition-colors",
                           selectedMenuId === item.id
-                            ? "bg-sidebar-primary text-sidebar-primary-foreground font-medium"
+                            ? "bg-sidebar-primary font-medium text-sidebar-primary-foreground"
                             : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
                         )}
                       >
@@ -224,44 +206,46 @@ export function KrxSidebar({ selectedMenuId, onMenuSelect }: KrxSidebarProps) {
                       </button>
                     ))}
                   </div>
-                )}
+                ) : null}
               </div>
             );
           })}
 
-          {/* Tools separator + section */}
           <Separator className="my-1" />
           <div>
             <button
+              type="button"
               onClick={() => toggleCategory(TOOLS_MENU.id)}
-              className="w-full flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
             >
               {expandedCategories.has(TOOLS_MENU.id) ? (
-                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
               ) : (
-                <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                <ChevronRight className="h-3.5 w-3.5 shrink-0" />
               )}
+              <Calculator className="h-3.5 w-3.5 shrink-0" />
               {TOOLS_MENU.label}
             </button>
-            {expandedCategories.has(TOOLS_MENU.id) && (
+            {expandedCategories.has(TOOLS_MENU.id) ? (
               <div className="pb-1">
                 {TOOLS_MENU.items.map((item) => (
                   <button
                     key={item.id}
+                    type="button"
                     onClick={() => onMenuSelect(item)}
                     className={cn(
-                      "w-full text-left pl-7 pr-3 py-1.5 text-xs transition-colors truncate flex items-center gap-1.5",
+                      "flex w-full items-center gap-1.5 truncate px-3 py-1.5 pl-7 pr-3 text-left text-xs transition-colors",
                       selectedMenuId === item.id
-                        ? "bg-sidebar-primary text-sidebar-primary-foreground font-medium"
+                        ? "bg-sidebar-primary font-medium text-sidebar-primary-foreground"
                         : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
                     )}
                   >
-                    <Calculator className="w-3 h-3 shrink-0" />
+                    <Calculator className="h-3 w-3 shrink-0" />
                     {item.label}
                   </button>
                 ))}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </ScrollArea>

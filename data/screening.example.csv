@@ -1,0 +1,2 @@
+run_key,as_of_date,strategy_key,stock_code,stock_name,run_label,source,status,market,rank_no,score,signal,close_price,change_rate,volume,reason_summary,tags,notes
+screening_20260616_main,20260616,momentum,005930,Samsung Electronics,Daily screening,csv,completed,KOSPI,1,92.4,BUY,59000,2.11,586336867,Strong score across selected factors,"momentum;large-cap",Sample row only

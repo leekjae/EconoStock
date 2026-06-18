@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,139 +7,50 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const KRX_DATA_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd";
-const KRX_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+// ─── Investor / Market mapping ───
+const INVESTOR_CODES: Record<string, string> = {
+  ALL: "9999", PERSONAL: "8000", FOREIGN: "9000", INSTITUTION: "7050",
+  PENSION: "6000", BANK: "1000", INSURANCE: "2000", TRUST: "3000",
+  PRIVATE_EQUITY: "3100", SECURITIES: "4000", OTHER_FINANCIAL: "5000",
+  OTHER_CORPORATE: "7100", OTHER_FOREIGN: "9001",
+};
 
-// ── KRX fetch (only called when feature is enabled) ──
-async function krxFetchWithSession(params: Record<string, string>): Promise<Record<string, unknown>> {
-  const commonHeaders = {
-    "User-Agent": KRX_UA,
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC02020301",
-    "Origin": "https://data.krx.co.kr",
-    "Content-Type": "application/x-www-form-urlencoded",
-    "X-Requested-With": "XMLHttpRequest",
-  };
-
-  const pageResp = await fetch(
-    "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC02020301",
-    { method: "GET", headers: { "User-Agent": KRX_UA, "Accept": "text/html" } }
-  );
-  await pageResp.text();
-  const setCookie = pageResp.headers.get("set-cookie") || "";
-  const cookieMatch = setCookie.match(/JSESSIONID=([^;]+)/);
-  const cookie = cookieMatch ? `JSESSIONID=${cookieMatch[1]}` : "";
-
-  const body = new URLSearchParams(params);
-  const dataResp = await fetch(KRX_DATA_URL, {
-    method: "POST",
-    headers: { ...commonHeaders, ...(cookie ? { "Cookie": cookie } : {}) },
-    body: body.toString(),
-  });
-
-  const text = await dataResp.text();
-  if (text.includes("LOGOUT") || text.includes("접근이 거부")) {
-    throw new Error("KRX_LOGOUT");
-  }
-  return JSON.parse(text);
-}
-
-// ── Cache ──
-interface CacheEntry { data: unknown; ts: number; ttl: number }
-const cache = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<unknown>>();
-
-const TTL_DEFAULT = 24 * 60 * 60 * 1000;
-const TTL_RECENT = 6 * 60 * 60 * 1000;
-
-function isRecentDate(endDate: string): boolean {
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
-  return endDate >= todayStr;
-}
-
-function getCached(key: string): { data: unknown; ts: number } | null {
-  const entry = cache.get(key);
-  if (entry && Date.now() - entry.ts < entry.ttl) {
-    return { data: entry.data, ts: entry.ts };
-  }
-  // Return stale data if it exists (for fallback)
-  if (entry) return { data: entry.data, ts: entry.ts };
-  return null;
-}
-
-function setCache(key: string, data: unknown, ttl: number) {
-  cache.set(key, { data, ts: Date.now(), ttl });
-  if (cache.size > 200) {
-    const now = Date.now();
-    for (const [k, v] of cache) {
-      if (now - v.ts > v.ttl * 2) cache.delete(k); // keep stale entries longer for fallback
-    }
-  }
-}
-
-function isCacheFresh(key: string): boolean {
-  const entry = cache.get(key);
-  return !!entry && Date.now() - entry.ts < entry.ttl;
-}
-
-// ── Mappings ──
-const INVESTOR_MAP: Record<string, string> = {
-  "금융투자": "1000", "보험": "2000", "투신": "3000", "사모": "3100",
-  "은행": "4000", "기타금융": "5000", "연기금": "6000", "기관합계": "7050",
-  "기타법인": "7100", "개인": "8000", "외국인": "9000", "기타외국인": "9001", "전체": "9999",
+const INVESTOR_ALIASES: Record<string, string> = {
+  전체: "ALL", 개인: "PERSONAL", 외국인: "FOREIGN",
+  기관: "INSTITUTION", 기관합계: "INSTITUTION",
+  연기금: "PENSION", 금융투자: "SECURITIES", 보험: "INSURANCE",
+  신탁: "TRUST", 사모: "PRIVATE_EQUITY", 은행: "BANK",
+  기타금융: "OTHER_FINANCIAL", 기타법인: "OTHER_CORPORATE", 기타외국인: "OTHER_FOREIGN",
+  투신: "TRUST",
+  "?꾩껜": "ALL", 媛쒖씤: "PERSONAL", "?멸뎅??": "FOREIGN",
+  "湲곌??⑷퀎": "INSTITUTION", "?곌린湲?": "PENSION",
+  "湲덉쑖?ъ옄": "SECURITIES", 蹂댄뿕: "INSURANCE",
+  "?ъ떊": "TRUST", "?щえ": "PRIVATE_EQUITY", "???": "BANK",
+  "湲고?湲덉쑖": "OTHER_FINANCIAL", "湲고?踰뺤씤": "OTHER_CORPORATE",
+  "湲고??멸뎅??": "OTHER_FOREIGN",
 };
 
 const MARKET_MAP: Record<string, string> = {
-  "ALL": "ALL", "KOSPI": "STK", "KOSDAQ": "KSQ", "KONEX": "KNX",
+  ALL: "ALL", KOSPI: "STK", KOSDAQ: "KSQ", KONEX: "KNX",
+  STK: "STK", KSQ: "KSQ", KNX: "KNX",
 };
 
-interface InvestorRow {
-  isuCd: string; isuNm: string;
-  volSell: number; volBuy: number; volNet: number;
-  valSell: number; valBuy: number; valNet: number;
+function normalizeInvestor(input: string): string {
+  const raw = (input || "ALL").trim();
+  if (/^\d{4}$/.test(raw)) return raw;
+  const upper = raw.toUpperCase();
+  if (INVESTOR_CODES[upper]) return INVESTOR_CODES[upper];
+  const canonical = INVESTOR_ALIASES[raw];
+  if (canonical && INVESTOR_CODES[canonical]) return INVESTOR_CODES[canonical];
+  return INVESTOR_CODES.ALL;
 }
 
-const EMPTY_DATA_MESSAGE = "현재 KRX 투자자별 데이터 응답이 비어 있습니다. 잠시 후 다시 시도해주세요.";
-
-function pn(val: string | undefined): number {
-  if (!val || val === "-" || val === "") return 0;
-  return Number(val.replace(/,/g, "").trim()) || 0;
+function normalizeMarket(input: string): string {
+  return MARKET_MAP[(input || "ALL").trim().toUpperCase()] || "ALL";
 }
 
-async function fetchInvestorData(startDate: string, endDate: string, mktId: string, invstTpCd: string): Promise<InvestorRow[]> {
-  const params: Record<string, string> = {
-    bld: "dbms/MDC/STAT/standard/MDCSTAT02401",
-    strtDd: startDate, endDd: endDate, mktId, invstTpCd,
-  };
-  const json = await krxFetchWithSession(params);
-  const output = (json?.output as Record<string, string>[]) ?? [];
-  if (output.length === 0) {
-    throw new Error("EMPTY_DATA");
-  }
-  return output.map((row) => ({
-    isuCd: (row.ISU_SRT_CD || "").padStart(6, "0"),
-    isuNm: row.ISU_NM || "",
-    volSell: pn(row.ASK_TRDVOL), volBuy: pn(row.BID_TRDVOL), volNet: pn(row.NETBID_TRDVOL),
-    valSell: pn(row.ASK_TRDVAL), valBuy: pn(row.BID_TRDVAL), valNet: pn(row.NETBID_TRDVAL),
-  }));
-}
+function isValidYmd(s: string) { return /^\d{8}$/.test(s); }
 
-// ── CSV ──
-function toCSV(rows: InvestorRow[], meta: Record<string, string>): string {
-  const BOM = "\uFEFF";
-  const header = "종목코드,종목명,거래량_매도,거래량_매수,거래량_순매수,거래대금_매도,거래대금_매수,거래대금_순매수,시장구분,투자자구분,조회시작일,조회종료일,생성시각";
-  const now = new Date().toISOString();
-  const body = rows.map(r => [
-    r.isuCd, `"${r.isuNm}"`, r.volSell, r.volBuy, r.volNet,
-    r.valSell, r.valBuy, r.valNet,
-    meta.market, meta.investor, meta.startDate, meta.endDate, now,
-  ].join(",")).join("\n");
-  return BOM + header + "\n" + body;
-}
-
-// ── Standard response helpers ──
 function jsonResp(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -146,97 +58,170 @@ function jsonResp(body: unknown, status = 200) {
   });
 }
 
-function fallbackResponse(cachedEntry: { data: unknown; ts: number } | null, topN: number, message = EMPTY_DATA_MESSAGE) {
-  if (cachedEntry) {
-    const rows = (cachedEntry.data as InvestorRow[]).slice(0, topN);
-    return jsonResp({
-      ok: true,
-      items: rows,
-      totalRows: (cachedEntry.data as InvestorRow[]).length,
-      generatedAt: cachedEntry.ts,
-      stale: true,
-      note: "최신 갱신 실패로 마지막 성공 데이터를 표시합니다.",
-    });
-  }
-  return jsonResp({
-    ok: false,
-    errorCode: "UPSTREAM_UNAVAILABLE",
-    message,
-  });
-}
-
-// ── Main handler ──
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, serviceKey);
+
     const url = new URL(req.url);
-    const market = url.searchParams.get("market") || "ALL";
-    const investor = url.searchParams.get("investor") || "전체";
-    const startDate = url.searchParams.get("startDate");
-    const endDate = url.searchParams.get("endDate");
-    const topN = parseInt(url.searchParams.get("topN") || "50", 10);
-    const mode = url.searchParams.get("mode") || "json";
+    const action = (url.searchParams.get("action") || "query").toLowerCase();
+    const marketRaw = url.searchParams.get("market") || "ALL";
+    const investorRaw = url.searchParams.get("investor") || "전체";
+    const startDate = url.searchParams.get("startDate") || "";
+    const endDate = url.searchParams.get("endDate") || "";
+    const topN = Math.min(500, Math.max(1, Number(url.searchParams.get("topN") || "50")));
+    const mode = (url.searchParams.get("mode") || "json").toLowerCase();
 
-    if (!startDate || !endDate) {
-      return jsonResp({ ok: false, errorCode: "BAD_REQUEST", message: "startDate and endDate are required (YYYYMMDD)" }, 400);
+    const marketCode = normalizeMarket(marketRaw);
+    const investorCode = normalizeInvestor(investorRaw);
+
+    // ─── PROBE ───
+    if (action === "probe") {
+      const [{ data: latestRow }, { data: oldestRow }, { data: syncStatus }] = await Promise.all([
+        supabase.from("investor_snapshots").select("trade_date, collected_at").order("trade_date", { ascending: false }).limit(1).single(),
+        supabase.from("investor_snapshots").select("trade_date").order("trade_date", { ascending: true }).limit(1).single(),
+        supabase.from("investor_sync_status").select("*").order("last_attempt_at", { ascending: false }).limit(1).single(),
+      ]);
+
+      return jsonResp({
+        ok: true,
+        probe: {
+          source: "database",
+          marketRaw, marketCode, investorRaw, investorCode,
+          minTradeDate: oldestRow?.trade_date || null,
+          maxTradeDate: latestRow?.trade_date || null,
+          latestTradeDate: latestRow?.trade_date || null,
+          latestCollectedAt: latestRow?.collected_at || null,
+          syncStatus: syncStatus || null,
+        },
+      });
     }
 
+    // ─── Validate dates ───
+    if (!isValidYmd(startDate) || !isValidYmd(endDate)) {
+      return jsonResp({ ok: false, errorCode: "BAD_REQUEST", message: "startDate and endDate required (YYYYMMDD)." }, 400);
+    }
     if (startDate > endDate) {
-      return jsonResp({ ok: false, errorCode: "BAD_REQUEST", message: "startDate must be less than or equal to endDate" }, 400);
+      return jsonResp({ ok: false, errorCode: "BAD_REQUEST", message: "startDate must be <= endDate." }, 400);
     }
 
-    const mktId = MARKET_MAP[market] || "ALL";
-    const invstTpCd = INVESTOR_MAP[investor] || "9999";
-    const cacheKey = `invTopEq:${mktId}:${invstTpCd}:${startDate}:${endDate}`;
+    // ─── Get DB date range ───
+    const [{ data: minRow }, { data: maxRow }] = await Promise.all([
+      supabase.from("investor_snapshots").select("trade_date").order("trade_date", { ascending: true }).limit(1).single(),
+      supabase.from("investor_snapshots").select("trade_date").order("trade_date", { ascending: false }).limit(1).single(),
+    ]);
+    const minTradeDate = (minRow?.trade_date as string) || null;
+    const maxTradeDate = (maxRow?.trade_date as string) || null;
 
-    // Direct KRX fetch with cache fallback
-    let rows: InvestorRow[];
+    // ─── Query DB ───
+    let query = supabase
+      .from("investor_snapshots")
+      .select("*")
+      .eq("investor_code", investorCode)
+      .eq("market", marketCode)
+      .gte("trade_date", startDate)
+      .lte("trade_date", endDate);
+
+    // Order by absolute net value descending for "top" ranking
+    query = query.order("val_net", { ascending: false });
+
+    const { data: rows, error: dbError } = await query.limit(topN);
+
+    if (dbError) {
+      console.error("DB query error:", dbError);
+      return jsonResp({ ok: false, errorCode: "DB_ERROR", message: dbError.message });
+    }
+
+    // Check if we have data
+    const items = (rows || []).map((r: Record<string, unknown>) => ({
+      isuCd: r.stock_code as string,
+      isuNm: r.stock_name as string,
+      volSell: r.vol_sell as number,
+      volBuy: r.vol_buy as number,
+      volNet: r.vol_net as number,
+      valSell: r.val_sell as number,
+      valBuy: r.val_buy as number,
+      valNet: r.val_net as number,
+    }));
+
+    // Determine resolved dates and stale status
+    let resolvedStartDate = startDate;
+    let resolvedEndDate = endDate;
+    let usedFallbackDate = false;
     let stale = false;
-    let generatedAt = Date.now();
 
-    const cachedEntry = getCached(cacheKey);
+    if (items.length === 0 && startDate === endDate) {
+      // Try to find nearest available date (fallback)
+      const { data: fallbackRows } = await supabase
+        .from("investor_snapshots")
+        .select("trade_date")
+        .eq("investor_code", investorCode)
+        .eq("market", marketCode)
+        .lt("trade_date", startDate)
+        .order("trade_date", { ascending: false })
+        .limit(1)
+        .single();
 
-    if (cachedEntry && isCacheFresh(cacheKey)) {
-      rows = cachedEntry.data as InvestorRow[];
-      generatedAt = cachedEntry.ts;
-    } else {
-      try {
-        if (inflight.has(cacheKey)) {
-          rows = (await inflight.get(cacheKey)!) as InvestorRow[];
-        } else {
-          const promise = fetchInvestorData(startDate, endDate, mktId, invstTpCd);
-          inflight.set(cacheKey, promise);
-          try {
-            rows = await promise;
-            const ttl = isRecentDate(endDate) ? TTL_RECENT : TTL_DEFAULT;
-            setCache(cacheKey, rows, ttl);
-            generatedAt = Date.now();
-          } finally {
-            inflight.delete(cacheKey);
-          }
-        }
-      } catch (fetchErr) {
-        console.error("KRX fetch failed, falling back to cache:", (fetchErr as Error).message);
-        if (cachedEntry) {
-          rows = cachedEntry.data as InvestorRow[];
-          generatedAt = cachedEntry.ts;
-          stale = true;
-        } else {
-          const message = (fetchErr as Error).message === "EMPTY_DATA"
-            ? EMPTY_DATA_MESSAGE
-            : "현재 데이터 소스 점검 중입니다. 잠시 후 다시 시도해주세요.";
-          return fallbackResponse(null, topN, message);
+      if (fallbackRows?.trade_date) {
+        const fbDate = fallbackRows.trade_date as string;
+        const { data: fbRows } = await supabase
+          .from("investor_snapshots")
+          .select("*")
+          .eq("investor_code", investorCode)
+          .eq("market", marketCode)
+          .eq("trade_date", fbDate)
+          .order("val_net", { ascending: false })
+          .limit(topN);
+
+        if (fbRows && fbRows.length > 0) {
+          items.length = 0;
+          fbRows.forEach((r: Record<string, unknown>) => {
+            items.push({
+              isuCd: r.stock_code as string,
+              isuNm: r.stock_name as string,
+              volSell: r.vol_sell as number,
+              volBuy: r.vol_buy as number,
+              volNet: r.vol_net as number,
+              valSell: r.val_sell as number,
+              valBuy: r.val_buy as number,
+              valNet: r.val_net as number,
+            });
+          });
+          resolvedStartDate = fbDate;
+          resolvedEndDate = fbDate;
+          usedFallbackDate = true;
         }
       }
     }
 
-    const limitedRows = rows.slice(0, topN);
+    // Check sync status for staleness
+    const { data: syncRow } = await supabase
+      .from("investor_sync_status")
+      .select("last_success_at, last_error")
+      .order("last_attempt_at", { ascending: false })
+      .limit(1)
+      .single();
 
+    if (syncRow?.last_error && !syncRow?.last_success_at) {
+      stale = true;
+    }
+
+    const generatedAt = syncRow?.last_success_at
+      ? new Date(syncRow.last_success_at as string).getTime()
+      : Date.now();
+
+    // ─── CSV mode ───
     if (mode === "csv") {
-      const csv = toCSV(limitedRows, { market, investor, startDate, endDate });
+      const header = "stock_code,stock_name,vol_sell,vol_buy,vol_net,val_sell,val_buy,val_net";
+      const body = items.map((r) =>
+        `${r.isuCd},"${r.isuNm.replace(/"/g, '""')}",${r.volSell},${r.volBuy},${r.volNet},${r.valSell},${r.valBuy},${r.valNet}`
+      ).join("\n");
+      const csv = `\uFEFF${header}\n${body}`;
       return new Response(csv, {
         headers: {
           ...corsHeaders,
@@ -246,22 +231,35 @@ serve(async (req) => {
       });
     }
 
+    // Out-of-range message
+    let outOfRangeMsg: string | undefined;
+    if (items.length === 0 && minTradeDate && maxTradeDate) {
+      if (endDate < minTradeDate || startDate > maxTradeDate) {
+        outOfRangeMsg = `조회 가능 범위: ${minTradeDate} ~ ${maxTradeDate}`;
+      }
+    }
+
+    // ─── JSON response ───
     return jsonResp({
       ok: true,
-      items: limitedRows,
-      totalRows: rows.length,
+      items,
+      totalRows: items.length,
       generatedAt,
       stale,
-      ...(stale ? { note: "최신 갱신 실패로 마지막 성공 데이터를 표시합니다." } : {}),
+      resolvedStartDate,
+      resolvedEndDate,
+      usedFallbackDate,
+      minTradeDate,
+      maxTradeDate,
+      ...(stale ? { note: "Data may be outdated due to collection failure." } : {}),
+      ...(outOfRangeMsg ? { message: outOfRangeMsg } : {}),
     });
-
   } catch (error: unknown) {
-    // NEVER return 500 – always a parseable JSON response
-    console.error("Investor proxy unexpected error:", (error as Error).message);
+    console.error("investor-proxy error:", error);
     return jsonResp({
       ok: false,
       errorCode: "INTERNAL_ERROR",
-      message: "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+      message: error instanceof Error ? error.message : "Unknown error",
     });
   }
 });

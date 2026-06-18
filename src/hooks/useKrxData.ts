@@ -16,8 +16,8 @@ export function useBusinessDate() {
   return useQuery({
     queryKey: ["businessDate"],
     queryFn: findLatestBusinessDate,
-    staleTime: 6 * 60 * 60 * 1000,
-    gcTime: 6 * 60 * 60 * 1000,
+    staleTime: 60 * 1000,
+    gcTime: 60 * 1000,
   });
 }
 

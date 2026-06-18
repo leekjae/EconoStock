@@ -12,11 +12,15 @@ dist
 dist-ssr
 *.local
 .workspace
+.publish-git
+publish_git_meta
 .env
 .env.*
 !.env.example
 env.txt
 supabase/.temp
+__pycache__/
+*.pyc
 supabase/functions/.env
 supabase/functions/.env.*
 

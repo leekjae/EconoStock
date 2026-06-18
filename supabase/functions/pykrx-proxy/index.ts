@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.8";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,158 +7,360 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// KRX internal API (same as pykrx's Post class)
-const KRX_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd";
-const KRX_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const KRX_HEADERS = {
-  "Content-Type": "application/x-www-form-urlencoded",
-  "User-Agent": KRX_UA,
-  "Accept": "application/json, text/javascript, */*; q=0.01",
+const NAVER_BASE = "https://finance.naver.com";
+const NAVER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  Referer: `${NAVER_BASE}/`,
   "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-  "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201010101",
-  "Origin": "https://data.krx.co.kr",
-  "X-Requested-With": "XMLHttpRequest",
 };
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const STATUS_KEY = "naver_theme";
+let syncPromise: Promise<SyncResult> | null = null;
 
-// Cache
-interface CacheEntry { data: unknown; ts: number }
-const cache = new Map<string, CacheEntry>();
-const TTL = 24 * 60 * 60 * 1000;
-
-function getCached(key: string): unknown | null {
-  const e = cache.get(key);
-  if (e && Date.now() - e.ts < TTL) return e.data;
-  return null;
+interface ThemeRow {
+  theme_no: number;
+  theme_name: string;
+  detail_url: string;
+  stock_count: number;
+  page_no: number;
+  scraped_at: string;
 }
 
-function setCache(key: string, data: unknown) {
-  cache.set(key, { data, ts: Date.now() });
-  if (cache.size > 300) {
-    for (const [k, v] of cache) {
-      if (Date.now() - v.ts > TTL) cache.delete(k);
-    }
-  }
+interface ThemeStockRow {
+  theme_no: number;
+  stock_code: string;
+  stock_name: string;
+  rank_no: number;
+  scraped_at: string;
 }
 
-function formatYmd(date: Date): string {
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+interface SyncStatusRow {
+  sync_key: string;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  theme_count: number;
+  stock_count: number;
 }
 
-function latestCandidateDates(maxDays = 10): string[] {
-  return Array.from({ length: maxDays }, (_, idx) => {
-    const d = new Date();
-    d.setDate(d.getDate() - idx);
-    return formatYmd(d);
+interface ThemeSummary {
+  themeNo: number;
+  themeName: string;
+  detailUrl: string;
+  pageNo: number;
+}
+
+interface ThemeStock {
+  stockCode: string;
+  stockName: string;
+  rankNo: number;
+}
+
+interface SyncResult {
+  synced: boolean;
+  status: SyncStatusRow | null;
+}
+
+interface ThemeProbeResult {
+  page1Bytes: number;
+  page1ThemeLinkCount: number;
+  firstThemeUrl: string | null;
+  firstThemeStockLinkCount: number | null;
+  note: string;
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-// POST to KRX internal API (same as pykrx's Post.read)
-async function krxPost(params: Record<string, string>): Promise<Record<string, unknown> | null> {
-  const body = new URLSearchParams(params).toString();
+function createAdminClient() {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured");
+  }
+  return createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+}
+
+async function readHtml(url: string) {
+  const response = await fetch(url, { headers: NAVER_HEADERS });
+  if (!response.ok) throw new Error(`NAVER_HTML_${response.status}`);
+  const buffer = await response.arrayBuffer();
   try {
-    const pageResp = await fetch(
-      "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201010101",
-      { method: "GET", headers: { "User-Agent": KRX_UA, "Accept": "text/html" } }
-    );
-    await pageResp.text();
-    const setCookie = pageResp.headers.get("set-cookie") || "";
-    const cookieMatch = setCookie.match(/JSESSIONID=([^;]+)/);
-    const cookie = cookieMatch ? `JSESSIONID=${cookieMatch[1]}` : "";
-
-    const resp = await fetch(KRX_URL, {
-      method: "POST",
-      headers: { ...KRX_HEADERS, ...(cookie ? { Cookie: cookie } : {}) },
-      body,
-    });
-    if (!resp.ok) {
-      console.error(`KRX POST error: ${resp.status}`);
-      return null;
-    }
-    const text = await resp.text();
-    try {
-      return JSON.parse(text);
-    } catch {
-      console.error(`KRX non-JSON response: ${text.substring(0, 200)}`);
-      return null;
-    }
-  } catch (e) {
-    console.error("KRX fetch error:", e);
-    return null;
+    return new TextDecoder("euc-kr").decode(buffer);
+  } catch {
+    return new TextDecoder().decode(buffer);
   }
 }
 
-// pykrx: 주가지수검색 (bld=dbms/comm/finder/finder_equidx)
-// Returns index list with full_code (group_id) and short_code (ticker)
-interface IndexItem {
-  indexTicker: string;   // full_code (e.g. "1018", "2001")
-  indexName: string;     // codeName
-  groupId: string;       // full_code (same, used for component lookup indIdx)
-  shortCode: string;     // short_code (e.g. "018", "001") used for indIdx2
-  marketName: string;
+function decodeHtml(text: string) {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&nbsp;/g, " ")
+    .trim();
 }
 
-async function fetchIndexList(market: string): Promise<IndexItem[]> {
-  // pykrx market mapping: 1=전체, 2=KRX, 3=KOSPI, 4=KOSDAQ, 5=테마
-  const marketMap: Record<string, string> = {
-    ALL: "1",
-    KRX: "2",
-    KOSPI: "3",
-    KOSDAQ: "4",
-    THEME: "5",
+function stripTags(text: string) {
+  return decodeHtml(text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "));
+}
+
+function extractThemeNo(href: string | null) {
+  const match = href?.match(/no=(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function extractStockCode(href: string | null) {
+  const match = href?.match(/code=(\d{6})/);
+  return match ? match[1] : null;
+}
+
+function countThemeLinks(html: string) {
+  const regex = /<a[^>]+href\s*=\s*(['"])([^'"]*sise_group_detail\.naver\?[^'"]*no=\d+[^'"]*)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  let count = 0;
+  for (const _ of html.matchAll(regex)) count += 1;
+  return count;
+}
+
+function countStockLinks(html: string) {
+  const regex = /<a[^>]+href\s*=\s*(['"])([^'"]*item\/main(?:\.naver)?\?code=\d{6}[^'"]*)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  let count = 0;
+  for (const _ of html.matchAll(regex)) count += 1;
+  return count;
+}
+
+async function fetchThemePage(page: number): Promise<ThemeSummary[]> {
+  const html = await readHtml(`${NAVER_BASE}/sise/theme.naver?page=${page}`);
+  const themes: ThemeSummary[] = [];
+  const seen = new Set<number>();
+
+  const regex =
+    /<a[^>]+href\s*=\s*(['"])([^'"]*sise_group_detail\.naver\?type=theme(?:&|&amp;)no=\d+[^'"]*)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(regex)) {
+    const href = decodeHtml(match[2]);
+    const themeNo = extractThemeNo(href);
+    const themeName = stripTags(match[3]);
+    if (!themeNo || !themeName || seen.has(themeNo)) continue;
+    seen.add(themeNo);
+    themes.push({
+      themeNo,
+      themeName,
+      detailUrl: `${NAVER_BASE}${href.startsWith("/") ? href : `/${href}`}`,
+      pageNo: page,
+    });
+  }
+
+  return themes;
+}
+
+async function fetchAllThemes() {
+  const results: ThemeSummary[] = [];
+  const seen = new Set<number>();
+
+  for (let page = 1; page <= 20; page += 1) {
+    const items = await fetchThemePage(page);
+    if (items.length === 0) break;
+    for (const item of items) {
+      if (seen.has(item.themeNo)) continue;
+      seen.add(item.themeNo);
+      results.push(item);
+    }
+  }
+
+  return results.sort((a, b) => a.themeName.localeCompare(b.themeName, "ko"));
+}
+
+async function runProbe(): Promise<ThemeProbeResult> {
+  const html = await readHtml(`${NAVER_BASE}/sise/theme.naver?page=1`);
+  const page1ThemeLinkCount = countThemeLinks(html);
+  const firstPageThemes = await fetchThemePage(1);
+  const firstTheme = firstPageThemes[0];
+
+  let firstThemeStockLinkCount: number | null = null;
+  if (firstTheme?.detailUrl) {
+    const detailHtml = await readHtml(firstTheme.detailUrl);
+    firstThemeStockLinkCount = countStockLinks(detailHtml);
+  }
+
+  return {
+    page1Bytes: html.length,
+    page1ThemeLinkCount,
+    firstThemeUrl: firstTheme?.detailUrl ?? null,
+    firstThemeStockLinkCount,
+    note: "If page1ThemeLinkCount is 0, Naver markup changed or bot-block page is being served in this runtime.",
   };
-  const mktsel = marketMap[market] || "1";
-
-  const json = await krxPost({
-    bld: "dbms/comm/finder/finder_equidx",
-    mktsel,
-  });
-
-  if (!json || !json.block1) {
-    console.error("No block1 in finder_equidx response");
-    return [];
-  }
-
-  const items = json.block1 as Record<string, string>[];
-  return items.map((item) => {
-    const groupId = String(item.full_code || "");
-    const shortCode = String(item.short_code || "");
-
-    return {
-      indexTicker: `${groupId}${shortCode}`,
-      indexName: String(item.codeName || ""),
-      groupId,
-      shortCode,
-      marketName: String(item.marketName || ""),
-    };
-  });
 }
 
-// pykrx: 지수구성종목 (bld=dbms/MDC/STAT/standard/MDCSTAT00601)
-// params: indIdx2=ticker, indIdx=group_id, trdDd=date
-async function fetchIndexComponents(
-  ticker: string,
-  groupId: string,
-): Promise<{ stockTicker: string; stockName: string }[]> {
-  for (const trdDd of latestCandidateDates()) {
-    const json = await krxPost({
-      bld: "dbms/MDC/STAT/standard/MDCSTAT00601",
-      trdDd,
-      indIdx2: ticker,
-      indIdx: groupId,
-    });
+async function fetchThemeStocks(theme: ThemeSummary): Promise<ThemeStock[]> {
+  const html = await readHtml(theme.detailUrl);
+  const stocks: ThemeStock[] = [];
+  const seen = new Set<string>();
 
-    if (!json) continue;
-
-    const items = (json.output || []) as Record<string, string>[];
-    if (items.length === 0) continue;
-
-    return items.map((item) => ({
-      stockTicker: item.ISU_SRT_CD || "",
-      stockName: item.ISU_ABBRV || "",
-    }));
+  const regex = /<a[^>]+href\s*=\s*(['"])([^'"]*item\/main(?:\.naver)?\?code=\d{6}[^'"]*)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(regex)) {
+    const href = decodeHtml(match[2]);
+    const stockCode = extractStockCode(href);
+    const stockName = stripTags(match[3]);
+    if (!stockCode || !stockName || seen.has(stockCode)) continue;
+    seen.add(stockCode);
+    stocks.push({ stockCode, stockName, rankNo: stocks.length + 1 });
   }
 
-  return [];
+  return stocks;
+}
+
+async function fetchThemeStocksInBatches(themes: ThemeSummary[]) {
+  const results: { theme: ThemeSummary; stocks: ThemeStock[] }[] = [];
+  const concurrency = 4;
+
+  for (let index = 0; index < themes.length; index += concurrency) {
+    const slice = themes.slice(index, index + concurrency);
+    const batch = await Promise.all(slice.map(async (theme) => ({ theme, stocks: await fetchThemeStocks(theme) })));
+    results.push(...batch);
+  }
+
+  return results;
+}
+
+async function writeSyncStatus(supabase: ReturnType<typeof createAdminClient>, patch: Partial<SyncStatusRow>) {
+  const { error } = await supabase.from("naver_theme_sync_status").upsert({
+    sync_key: STATUS_KEY,
+    ...patch,
+  });
+  if (error) throw error;
+}
+
+async function getSyncStatus(supabase: ReturnType<typeof createAdminClient>) {
+  const { data, error } = await supabase
+    .from("naver_theme_sync_status")
+    .select("sync_key,last_attempt_at,last_success_at,last_error,theme_count,stock_count")
+    .eq("sync_key", STATUS_KEY)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as SyncStatusRow | null;
+}
+
+function isFresh(status: SyncStatusRow | null) {
+  if (!status?.last_success_at) return false;
+  return Date.now() - new Date(status.last_success_at).getTime() < WEEK_MS;
+}
+
+async function replaceThemeSnapshot(supabase: ReturnType<typeof createAdminClient>) {
+  const now = new Date().toISOString();
+  const themes = await fetchAllThemes();
+  const themeStocks = await fetchThemeStocksInBatches(themes);
+  const totalStocks = themeStocks.reduce((sum, item) => sum + item.stocks.length, 0);
+
+  if (themes.length < 10 || totalStocks < 50) {
+    throw new Error(`THEME_SCRAPE_RESULT_TOO_SMALL: themes=${themes.length}, stocks=${totalStocks}`);
+  }
+
+  const themeRows: ThemeRow[] = themeStocks.map(({ theme, stocks }) => ({
+    theme_no: theme.themeNo,
+    theme_name: theme.themeName,
+    detail_url: theme.detailUrl,
+    stock_count: stocks.length,
+    page_no: theme.pageNo,
+    scraped_at: now,
+  }));
+
+  const stockRows: ThemeStockRow[] = themeStocks.flatMap(({ theme, stocks }) =>
+    stocks.map((stock) => ({
+      theme_no: theme.themeNo,
+      stock_code: stock.stockCode,
+      stock_name: stock.stockName,
+      rank_no: stock.rankNo,
+      scraped_at: now,
+    })),
+  );
+
+  const themeNos = themeRows.map((row) => row.theme_no);
+  const inClause = `(${themeNos.join(",")})`;
+  const { error: upsertThemesError } = await supabase.from("naver_themes").upsert(themeRows);
+  if (upsertThemesError) throw upsertThemesError;
+
+  const { error: deleteStocksError } = await supabase.from("naver_theme_stocks").delete().in("theme_no", themeNos);
+  if (deleteStocksError) throw deleteStocksError;
+
+  const { error: insertStocksError } = await supabase.from("naver_theme_stocks").insert(stockRows);
+  if (insertStocksError) throw insertStocksError;
+
+  const { error: deleteOrphanStocksError } = await supabase
+    .from("naver_theme_stocks")
+    .delete()
+    .not("theme_no", "in", inClause);
+  if (deleteOrphanStocksError) throw deleteOrphanStocksError;
+
+  const { error: deleteOrphanThemesError } = await supabase
+    .from("naver_themes")
+    .delete()
+    .not("theme_no", "in", inClause);
+  if (deleteOrphanThemesError) throw deleteOrphanThemesError;
+
+  await writeSyncStatus(supabase, {
+    sync_key: STATUS_KEY,
+    last_success_at: now,
+    last_attempt_at: now,
+    last_error: null,
+    theme_count: themeRows.length,
+    stock_count: stockRows.length,
+  });
+
+  return {
+    synced: true,
+    status: {
+      sync_key: STATUS_KEY,
+      last_success_at: now,
+      last_attempt_at: now,
+      last_error: null,
+      theme_count: themeRows.length,
+      stock_count: stockRows.length,
+    } satisfies SyncStatusRow,
+  };
+}
+
+async function ensureFreshSnapshot(supabase: ReturnType<typeof createAdminClient>, force = false): Promise<SyncResult> {
+  const status = await getSyncStatus(supabase);
+  if (!force && isFresh(status)) {
+    return { synced: false, status };
+  }
+
+  if (syncPromise) return syncPromise;
+
+  syncPromise = (async () => {
+    const attemptAt = new Date().toISOString();
+    await writeSyncStatus(supabase, { sync_key: STATUS_KEY, last_attempt_at: attemptAt });
+
+    try {
+      return await replaceThemeSnapshot(supabase);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_THEME_SYNC_ERROR";
+      await writeSyncStatus(supabase, {
+        sync_key: STATUS_KEY,
+        last_attempt_at: attemptAt,
+        last_error: message,
+      });
+
+      const fallback = await getSyncStatus(supabase);
+      if (fallback) {
+        return { synced: false, status: fallback };
+      }
+      throw error;
+    } finally {
+      syncPromise = null;
+    }
+  })();
+
+  return syncPromise;
 }
 
 serve(async (req) => {
@@ -166,105 +369,98 @@ serve(async (req) => {
   }
 
   try {
+    const supabase = createAdminClient();
     const url = new URL(req.url);
-    const action = url.searchParams.get("action");
+    const action = url.searchParams.get("action") || "list";
+
+    if (action === "sync") {
+      const result = await ensureFreshSnapshot(supabase, false);
+      return jsonResponse({ ok: true, synced: result.synced, status: result.status });
+    }
+
+    if (action === "probe") {
+      const probe = await runProbe();
+      return jsonResponse({ ok: true, probe });
+    }
+
+    await ensureFreshSnapshot(supabase, false);
+    const status = await getSyncStatus(supabase);
 
     if (action === "list") {
-      const market = url.searchParams.get("market") || "ALL";
-      const q = (url.searchParams.get("q") || "").trim().toLowerCase();
-      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1"));
-      const pageSize = Math.min(200, Math.max(10, parseInt(url.searchParams.get("pageSize") || "50")));
+      const q = (url.searchParams.get("q") || "").trim();
+      const page = Math.max(1, Number(url.searchParams.get("page") || "1"));
+      const pageSize = Math.min(200, Math.max(10, Number(url.searchParams.get("pageSize") || "50")));
 
-      const cacheKey = `pykrx:indexes:${market}`;
-      let allItems = getCached(cacheKey) as IndexItem[] | null;
+      let query = supabase
+        .from("naver_themes")
+        .select("theme_no,theme_name,detail_url,stock_count,scraped_at", { count: "exact" })
+        .order("theme_name", { ascending: true });
 
-      if (!allItems) {
-        allItems = await fetchIndexList(market);
-        if (allItems.length > 0) {
-          setCache(cacheKey, allItems);
-        }
-      }
+      if (q) query = query.ilike("theme_name", `%${q}%`);
 
-      let filtered = allItems;
-      if (q) {
-        filtered = allItems.filter(
-          (item) =>
-            item.indexName.toLowerCase().includes(q) ||
-            item.indexTicker.toLowerCase().includes(q)
-        );
-      }
+      const from = (page - 1) * pageSize;
+      const to = from + pageSize - 1;
+      const { data, count, error } = await query.range(from, to);
+      if (error) throw error;
 
-      filtered.sort((a, b) => a.indexName.localeCompare(b.indexName, "ko"));
-
-      const total = filtered.length;
-      const start = (page - 1) * pageSize;
-      const paged = filtered.slice(start, start + pageSize);
-
-      return new Response(
-        JSON.stringify({
-          items: paged,
-          total,
-          page,
-          pageSize,
-          generatedAt: new Date().toISOString(),
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        items: (data ?? []).map((item) => ({
+          themeNo: item.theme_no,
+          themeName: item.theme_name,
+          stockCount: item.stock_count,
+          updatedAt: item.scraped_at,
+        })),
+        total: count ?? 0,
+        page,
+        pageSize,
+        generatedAt: status?.last_success_at ?? null,
+        syncStatus: status,
+      });
     }
 
     if (action === "components") {
-      const ticker = url.searchParams.get("ticker");
-      const groupId = url.searchParams.get("groupId");
-      const indexName = url.searchParams.get("indexName") || "";
-      if (!ticker || !groupId) {
-        return new Response(
-          JSON.stringify({ error: "Missing ticker or groupId parameter" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      const themeNo = Number(url.searchParams.get("themeNo") || "0");
+      if (!themeNo) {
+        return jsonResponse({ error: "Missing themeNo parameter" }, 400);
       }
 
-      const cacheKey = `pykrx:components:${groupId}:${ticker}`;
-      const cached = getCached(cacheKey);
-      if (cached) {
-        return new Response(
-          JSON.stringify({
-            indexTicker: ticker,
-            indexName,
-            components: cached,
-            cacheStatus: "HIT",
-            generatedAt: new Date().toISOString(),
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
+      const [{ data: theme, error: themeError }, { data: stocks, error: stockError }] = await Promise.all([
+        supabase
+          .from("naver_themes")
+          .select("theme_no,theme_name,stock_count,scraped_at")
+          .eq("theme_no", themeNo)
+          .maybeSingle(),
+        supabase
+          .from("naver_theme_stocks")
+          .select("stock_code,stock_name,rank_no")
+          .eq("theme_no", themeNo)
+          .order("rank_no", { ascending: true }),
+      ]);
 
-      const components = await fetchIndexComponents(ticker, groupId);
-      if (components.length > 0) {
-        setCache(cacheKey, components);
-      }
+      if (themeError) throw themeError;
+      if (stockError) throw stockError;
 
-      return new Response(
-        JSON.stringify({
-          indexTicker: ticker,
-          indexName,
-          components,
-          cacheStatus: "MISS",
-          generatedAt: new Date().toISOString(),
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        themeNo,
+        themeName: theme?.theme_name ?? "",
+        stockCount: theme?.stock_count ?? 0,
+        updatedAt: theme?.scraped_at ?? status?.last_success_at ?? null,
+        components: (stocks ?? []).map((item) => ({
+          stockTicker: item.stock_code,
+          stockName: item.stock_name,
+          rankNo: item.rank_no,
+        })),
+        syncStatus: status,
+      });
     }
 
-    return new Response(
-      JSON.stringify({ error: "Unknown action. Use action=list or action=components" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    return jsonResponse(
+      { error: "Unknown action. Use action=list, action=components, action=sync, or action=probe" },
+      400,
     );
   } catch (error: unknown) {
-    console.error("pykrx-proxy error:", error);
+    console.error("theme-proxy error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: message }, 500);
   }
 });

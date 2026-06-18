@@ -1,0 +1,2 @@
+trade_date,market,investor_code,stock_code,stock_name,vol_sell,vol_buy,vol_net,val_sell,val_buy,val_net,collected_at
+20260616,ALL,8000,005930,Samsung Electronics,100000,150000,50000,5900000000,8850000000,2950000000,2026-06-17T04:10:00Z
