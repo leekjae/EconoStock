@@ -93,12 +93,43 @@ npm run sync:screening -- --file D:/Codex/Screening/output --dry-run
 npm run sync:screening -- --file D:/Codex/Screening/output
 ```
 
+Optional arguments:
+
+- `--env-file D:/Codex/secrets/econostock-sync.env`
+- `--db D:/Codex/Screening/data/market_data.sqlite`
+- `--force`
+- `--skip-price-sync`
+
 Behavior:
 
 - checks `screening_sync_status.last_success_at`
 - checks the modified time of CSV files in the output folder
 - skips import when nothing new changed
 - runs the normal `import:screening` command when a new or updated file is detected
+- automatically runs `import-screening-price-sqlite.py` after screening sync
+- when the screening files did not change, it still attempts an incremental price sync
+- this lets the previous latest run fill automatically as soon as the next trading day's prices are available in `market_data.sqlite`
+
+### One-click CMD runner
+
+For the current local setup, you can run the prepared batch file:
+
+```bat
+sync-screening-to-web.bat
+```
+
+It uses these defaults:
+
+- output folder: `D:\Codex\Screening\output`
+- SQLite DB: `D:\Codex\Screening\data\market_data.sqlite`
+- env file: `D:\Codex\secrets\econostock-sync.env`
+
+You can also pass through wrapper flags:
+
+```bat
+sync-screening-to-web.bat --dry-run
+sync-screening-to-web.bat --force
+```
 
 Supported screening import formats:
 

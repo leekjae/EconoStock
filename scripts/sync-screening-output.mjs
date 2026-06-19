@@ -9,14 +9,19 @@ import os from "node:os";
 import { finalizeRuns, parseInputFile, resolveInputFiles } from "./import-screening-csv.mjs";
 
 const STATUS_KEY = "manual_import_screening";
+const DEFAULT_ENV_FILE = "D:\\Codex\\secrets\\econostock-sync.env";
+const DEFAULT_SCREENING_DB = "D:\\Codex\\Screening\\data\\market_data.sqlite";
 
 function usage() {
   console.log(
-    "Usage: node scripts/sync-screening-output.mjs --file <csv-or-directory> [--dry-run] [--force]\n" +
+    "Usage: node scripts/sync-screening-output.mjs --file <csv-or-directory> [--dry-run] [--force] [--env-file <path>] [--db <sqlite>]\n" +
       "Examples:\n" +
       "  node scripts/sync-screening-output.mjs --file D:\\\\Codex\\\\Screening\\\\output\n" +
       "  node scripts/sync-screening-output.mjs --file D:\\\\Codex\\\\Screening\\\\output --dry-run\n" +
-      "  node scripts/sync-screening-output.mjs --file D:\\\\Codex\\\\Screening\\\\output --force"
+      "  node scripts/sync-screening-output.mjs --file D:\\\\Codex\\\\Screening\\\\output --force\n" +
+      "Defaults:\n" +
+      `  --env-file ${DEFAULT_ENV_FILE}\n` +
+      `  --db ${DEFAULT_SCREENING_DB}`
   );
 }
 
@@ -24,6 +29,9 @@ function parseArgs(argv) {
   let filePath = "";
   let dryRun = false;
   let force = false;
+  let envFile = "";
+  let dbPath = "";
+  let skipPriceSync = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -35,6 +43,10 @@ function parseArgs(argv) {
       force = true;
       continue;
     }
+    if (arg === "--skip-price-sync") {
+      skipPriceSync = true;
+      continue;
+    }
     if (arg === "--file") {
       filePath = argv[i + 1] || "";
       i += 1;
@@ -44,13 +56,61 @@ function parseArgs(argv) {
       filePath = arg.slice("--file=".length);
       continue;
     }
+    if (arg === "--env-file") {
+      envFile = argv[i + 1] || "";
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--env-file=")) {
+      envFile = arg.slice("--env-file=".length);
+      continue;
+    }
+    if (arg === "--db") {
+      dbPath = argv[i + 1] || "";
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--db=")) {
+      dbPath = arg.slice("--db=".length);
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
       usage();
       process.exit(0);
     }
   }
 
-  return { filePath, dryRun, force };
+  return { filePath, dryRun, force, envFile, dbPath, skipPriceSync };
+}
+
+async function loadEnvFileIfPresent(envFilePath) {
+  if (!envFilePath) {
+    return false;
+  }
+
+  try {
+    const raw = await fs.readFile(envFilePath, "utf8");
+    for (const line of raw.split(/\r?\n/u)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+        continue;
+      }
+
+      const [rawKey, ...rawValueParts] = trimmed.split("=");
+      const key = rawKey.trim();
+      const value = rawValueParts.join("=").trim().replace(/^['"]|['"]$/g, "");
+      if (key && !process.env[key]) {
+        process.env[key] = value;
+      }
+    }
+
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function fetchSyncStatus(supabaseUrl, serviceKey) {
@@ -155,6 +215,36 @@ async function runImport(resolvedInput) {
   });
 }
 
+async function runPriceImport({ dbPath, dryRun, envFile }) {
+  const currentFile = fileURLToPath(import.meta.url);
+  const priceScriptPath = path.join(path.dirname(currentFile), "import-screening-price-sqlite.py");
+  const childArgs = [priceScriptPath, "--db", dbPath];
+
+  if (envFile) {
+    childArgs.push("--env-file", envFile);
+  }
+  if (dryRun) {
+    childArgs.push("--dry-run");
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn("python", childArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "inherit",
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`import-screening-price-sqlite exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
 async function prepareImportTarget(resolvedInput, filesToImport) {
   const stat = await fs.stat(resolvedInput);
   if (stat.isFile()) {
@@ -179,12 +269,14 @@ async function prepareImportTarget(resolvedInput, filesToImport) {
 }
 
 async function main() {
-  const { filePath, dryRun, force } = parseArgs(process.argv.slice(2));
+  const { filePath, dryRun, force, envFile, dbPath, skipPriceSync } = parseArgs(process.argv.slice(2));
   if (!filePath) {
     usage();
     process.exit(1);
   }
 
+  const resolvedEnvFile = path.resolve(process.cwd(), envFile || DEFAULT_ENV_FILE);
+  const loadedEnvFile = await loadEnvFileIfPresent(resolvedEnvFile);
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
   if (!supabaseUrl || !serviceKey) {
@@ -193,6 +285,7 @@ async function main() {
   }
 
   const resolvedInput = path.resolve(process.cwd(), filePath);
+  const resolvedDbPath = path.resolve(process.cwd(), dbPath || DEFAULT_SCREENING_DB);
   const allFiles = await collectFileInfo(resolvedInput);
   const syncStatus = await fetchSyncStatus(supabaseUrl, serviceKey);
   const lastSuccessMs = syncStatus?.last_success_at ? Date.parse(syncStatus.last_success_at) : 0;
@@ -204,39 +297,59 @@ async function main() {
   console.log(`source: ${resolvedInput}`);
   console.log(`tracked files: ${allFiles.length}`);
   console.log(`last successful import: ${formatDateTime(syncStatus?.last_success_at ?? null)}`);
+  console.log(`env file: ${loadedEnvFile ? resolvedEnvFile : "not loaded"}`);
+  console.log(`screening db: ${resolvedDbPath}`);
+
+  const screeningImportNeeded = force || changedFiles.length > 0;
 
   if (force) {
     console.log("mode: force");
-  } else if (changedFiles.length === 0) {
-    console.log("mode: skip");
+  } else if (!screeningImportNeeded) {
+    console.log("mode: screening import skipped");
     console.log("No new or updated screening files since the last successful import.");
-    return;
   }
 
-  const filesToCheck = force ? changedFiles : changedFiles;
-  console.log(`files to inspect: ${filesToCheck.length}`);
-  for (const file of filesToCheck) {
-    console.log(`  - ${file.baseName} (${formatDateTime(file.modifiedAt)})`);
+  const filesToCheck = screeningImportNeeded ? changedFiles : [];
+
+  if (screeningImportNeeded) {
+    console.log(`files to inspect: ${filesToCheck.length}`);
+    for (const file of filesToCheck) {
+      console.log(`  - ${file.baseName} (${formatDateTime(file.modifiedAt)})`);
+    }
+
+    const summary = await summarizeFiles(filesToCheck);
+    console.log(`affected runs: ${summary.runRows.length}`);
+    console.log(`affected candidates: ${summary.candidateRows.length}`);
+    console.log(`skipped rows while parsing: ${summary.skippedCount}`);
+    if (dryRun) {
+      console.log("[dry-run] screening import skipped");
+    } else {
+      console.log("Starting screening import...");
+      const { importTarget, cleanup } = await prepareImportTarget(resolvedInput, filesToCheck);
+
+      try {
+        await runImport(importTarget);
+        console.log("Screening sync completed.");
+      } finally {
+        await cleanup();
+      }
+    }
   }
 
-  const summary = await summarizeFiles(filesToCheck);
-  console.log(`affected runs: ${summary.runRows.length}`);
-  console.log(`affected candidates: ${summary.candidateRows.length}`);
-  console.log(`skipped rows while parsing: ${summary.skippedCount}`);
+  if (!skipPriceSync) {
+    if (dryRun) {
+      console.log("[dry-run] starting screening price sync preview...");
+    } else {
+      console.log("Starting screening price sync...");
+    }
 
-  if (dryRun) {
-    console.log("[dry-run] import skipped");
-    return;
-  }
+    await runPriceImport({
+      dbPath: resolvedDbPath,
+      dryRun,
+      envFile: loadedEnvFile ? resolvedEnvFile : undefined,
+    });
 
-  console.log("Starting screening import...");
-  const { importTarget, cleanup } = await prepareImportTarget(resolvedInput, filesToCheck);
-
-  try {
-    await runImport(importTarget);
-    console.log("Screening sync completed.");
-  } finally {
-    await cleanup();
+    console.log(dryRun ? "Screening price sync preview completed." : "Screening price sync completed.");
   }
 }
 

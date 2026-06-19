@@ -4,7 +4,11 @@ import { Activity, AlertTriangle, BookOpenText, CircleHelp, Database, RefreshCw,
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
-import { useScreeningPerformance, type ScreeningPerformanceRow } from "@/components/screening/useScreeningPerformance";
+import {
+  useScreeningPerformance,
+  type ScreeningPerformancePoint,
+  type ScreeningPerformanceRow,
+} from "@/components/screening/useScreeningPerformance";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,9 +19,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 type ScreeningRun = Tables<"screening_runs">;
 type ScreeningCandidate = Tables<"screening_candidates">;
+type ScreeningPriceDate = Tables<"screening_price_dates">;
 type ScreeningSyncStatus = Tables<"screening_sync_status">;
 
 const SIGNAL_ORDER = ["strategy_a", "strategy_b", "cash", "overlap", "spike", "rebound"] as const;
+const PRICE_CHART_DAYS = 10;
 
 const SELECTION_GUIDE = [
   {
@@ -75,6 +81,11 @@ function isSchemaMissing(error: unknown) {
   return /screening_runs|screening_candidates|screening_sync_status|screening_price_daily|does not exist|could not find the table/i.test(
     message
   );
+}
+
+function isPriceDateTableMissing(error: unknown) {
+  const message = getErrorMessage(error);
+  return /screening_price_dates|does not exist|could not find the table/i.test(message);
 }
 
 function normalizeSignalKey(value: string) {
@@ -152,6 +163,31 @@ async function fetchScreeningSyncStatus() {
   return data;
 }
 
+async function fetchScreeningPriceDates() {
+  const pageSize = 1000;
+  const rows: ScreeningPriceDate[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("screening_price_dates")
+      .select("*")
+      .order("trade_date", { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (error) {
+      throw error;
+    }
+
+    const chunk = data ?? [];
+    rows.push(...chunk);
+    if (chunk.length < pageSize) {
+      break;
+    }
+  }
+
+  return rows;
+}
+
 function formatDateLabel(ymd: string | null | undefined) {
   if (!ymd) {
     return "-";
@@ -174,6 +210,29 @@ function formatDateIso(ymd: string | null | undefined) {
   }
 
   return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+}
+
+function formatShortDateLabel(ymd: string | null | undefined) {
+  if (!ymd) {
+    return "-";
+  }
+
+  if (!/^\d{8}$/.test(ymd)) {
+    return ymd;
+  }
+
+  return `${ymd.slice(4, 6)}.${ymd.slice(6, 8)}`;
+}
+
+function formatCompactPercent(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  const numeric = Number(value);
+  const decimals = Math.abs(numeric) >= 10 ? 0 : 1;
+  const signed = numeric > 0 ? `+${numeric.toFixed(decimals)}` : numeric.toFixed(decimals);
+  return `${signed}%`;
 }
 
 
@@ -264,6 +323,19 @@ export function ScreeningMonitor() {
     retry: false,
   });
 
+  const {
+    data: priceDates = [],
+    error: priceDatesError,
+    isLoading: priceDatesLoading,
+    refetch: refetchPriceDates,
+    isFetching: priceDatesFetching,
+  } = useQuery<ScreeningPriceDate[]>({
+    queryKey: ["screening-price-dates"],
+    queryFn: fetchScreeningPriceDates,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+
   const orderedRuns = useMemo(() => {
     return [...runs].sort((left, right) => {
       const dateCompare = right.as_of_date.localeCompare(left.as_of_date);
@@ -285,14 +357,27 @@ export function ScreeningMonitor() {
     });
   }, [runs]);
 
+  const priceDateOptions = useMemo(() => {
+    if (isPriceDateTableMissing(priceDatesError)) {
+      return [] as string[];
+    }
+
+    return Array.from(new Set(priceDates.map((row) => row.trade_date).filter(Boolean))).sort((left, right) => right.localeCompare(left));
+  }, [priceDates, priceDatesError]);
+
   const runDateOptions = useMemo(() => {
-    return Array.from(new Set(orderedRuns.map((run) => run.as_of_date))).sort((left, right) => right.localeCompare(left));
-  }, [orderedRuns]);
+    const runDates = orderedRuns.map((run) => run.as_of_date);
+    return Array.from(new Set([...runDates, ...priceDateOptions])).sort((left, right) => right.localeCompare(left));
+  }, [orderedRuns, priceDateOptions]);
+
+  const runsForSelectedDate = useMemo(() => {
+    return orderedRuns.filter((run) => !runDateFilter || run.as_of_date === runDateFilter);
+  }, [orderedRuns, runDateFilter]);
 
   const runSignalOptions = useMemo(() => {
-    const values = Array.from(new Set(orderedRuns.map((run) => normalizeSignalKey(run.strategy_key)).filter(Boolean)));
+    const values = Array.from(new Set(runsForSelectedDate.map((run) => normalizeSignalKey(run.strategy_key)).filter(Boolean)));
     return values.sort((left, right) => getSignalOrder(left) - getSignalOrder(right));
-  }, [orderedRuns]);
+  }, [runsForSelectedDate]);
 
   useEffect(() => {
     if (!runDateFilter && runDateOptions.length > 0) {
@@ -300,13 +385,18 @@ export function ScreeningMonitor() {
     }
   }, [runDateFilter, runDateOptions]);
 
+  useEffect(() => {
+    if (runSignalFilter !== "all" && !runSignalOptions.includes(runSignalFilter)) {
+      setRunSignalFilter("all");
+    }
+  }, [runSignalFilter, runSignalOptions]);
+
   const filteredRuns = useMemo(() => {
-    return orderedRuns.filter((run) => {
-      const matchesDate = !runDateFilter || run.as_of_date === runDateFilter;
+    return runsForSelectedDate.filter((run) => {
       const matchesSignal = runSignalFilter === "all" || normalizeSignalKey(run.strategy_key) === runSignalFilter;
-      return matchesDate && matchesSignal;
+      return matchesSignal;
     });
-  }, [orderedRuns, runDateFilter, runSignalFilter]);
+  }, [runSignalFilter, runsForSelectedDate]);
 
   const filteredRunKeys = useMemo(() => filteredRuns.map((run) => run.run_key), [filteredRuns]);
   const referenceRun = filteredRuns[0] ?? null;
@@ -372,10 +462,12 @@ export function ScreeningMonitor() {
   }, [candidates]);
 
   const schemaMissing = isSchemaMissing(runsError) || isSchemaMissing(candidatesError) || isSchemaMissing(syncError);
-  const isLoading = runsLoading || syncLoading;
+  const isLoading = runsLoading || syncLoading || priceDatesLoading;
   const isRefreshing =
-    runsFetching || syncFetching || candidatesFetching || performance.isFetching || performance.isLatestDateFetching;
+    runsFetching || syncFetching || priceDatesFetching || candidatesFetching || performance.isFetching || performance.isLatestDateFetching;
   const selectedRunGuide = runSignalFilter === "all" ? null : getSignalGuide(runSignalFilter);
+  const selectedDateHasScreening = runsForSelectedDate.length > 0;
+  const selectedDateHasPrice = runDateFilter ? priceDateOptions.includes(runDateFilter) : false;
   const selectedRunTiming = runDateFilter
     ? `${formatDateIso(runDateFilter)} 결과는 해당 거래일 종가 기준으로 생성되며, 실무적으로는 다음 거래일 시가 기준 검토 리스트로 해석합니다.`
     : "스크리닝 결과는 장 종료 후 생성되고, 다음 거래일 시가 기준으로 성과를 추적합니다.";
@@ -383,6 +475,7 @@ export function ScreeningMonitor() {
   const handleRefresh = () => {
     refetchRuns();
     refetchSync();
+    refetchPriceDates();
     if (filteredRunKeys.length > 0) {
       refetchCandidates();
     }
@@ -490,14 +583,26 @@ export function ScreeningMonitor() {
         <MetricCard
           title="기준일"
           value={runDateFilter ? formatDateLabel(runDateFilter) : "-"}
-          note={filteredRuns.length > 0 ? `${selectedSignalLabel} 라벨` : "선택된 결과 없음"}
+          note={
+            selectedDateHasScreening
+              ? `${selectedSignalLabel} 라벨`
+              : selectedDateHasPrice
+                ? "스크리닝 미실행일"
+                : "선택된 결과 없음"
+          }
           loading={isLoading}
           icon={<Activity className="h-4 w-4" />}
         />
         <MetricCard
           title="후보 종목 수"
           value={formatNumber(screeningStats.candidateCount)}
-          note={filteredRuns.length > 0 ? `조건에 맞는 run ${formatNumber(filteredRuns.length)}개` : "최신 결과 불러오는 중"}
+          note={
+            selectedDateHasScreening
+              ? `조건에 맞는 run ${formatNumber(filteredRuns.length)}개`
+              : selectedDateHasPrice
+                ? "이 날짜에는 후보 종목이 생성되지 않았습니다"
+                : "최신 결과 불러오는 중"
+          }
           loading={candidatesLoading}
           icon={<Database className="h-4 w-4" />}
         />
@@ -505,7 +610,9 @@ export function ScreeningMonitor() {
           title="평균 수익률"
           value={performance.summary.monitoredCount > 0 ? formatPercent(performance.summary.averageReturn) : "-"}
           note={
-            performance.summary.monitoredCount > 0
+            !selectedDateHasScreening && selectedDateHasPrice
+              ? "스크리닝 미실행일이라 성과 계산 대상이 없습니다"
+              : performance.summary.monitoredCount > 0
               ? `${formatNumber(performance.summary.monitoredCount)}개 종목이 성과 계산에 반영되었습니다`
               : "아직 성과 계산에 반영된 가격이 없습니다"
           }
@@ -527,11 +634,17 @@ export function ScreeningMonitor() {
             <div>
               <CardTitle className="text-lg">결과 필터</CardTitle>
               <CardDescription>
-                기준일과 라벨을 먼저 고르면, 아래 표에서 해당 조건의 종목이 바로 정렬되어 표시됩니다.
+                기준일을 먼저 고르고, 스크리닝이 실행된 날짜라면 라벨을 골라 해당 조건의 종목을 바로 확인할 수 있습니다.
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span>현재 조건에 맞는 run {formatNumber(filteredRuns.length)}개</span>
+              <span>
+                {selectedDateHasScreening
+                  ? `현재 조건에 맞는 run ${formatNumber(filteredRuns.length)}개`
+                  : selectedDateHasPrice
+                    ? "이 날짜는 가격 데이터만 있습니다"
+                    : `현재 조건에 맞는 run ${formatNumber(filteredRuns.length)}개`}
+              </span>
               <SelectionGuideHover />
             </div>
           </div>
@@ -558,6 +671,7 @@ export function ScreeningMonitor() {
               <select
                 value={runSignalFilter}
                 onChange={(event) => setRunSignalFilter(event.target.value)}
+                disabled={!selectedDateHasScreening}
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="all">전체</option>
@@ -578,6 +692,7 @@ export function ScreeningMonitor() {
                 {runSignalFilter !== "all" && referenceRun ? (
                   <Badge variant={getStatusVariant(referenceRun.status)}>{referenceRun.status}</Badge>
                 ) : null}
+                {!selectedDateHasScreening && selectedDateHasPrice ? <Badge variant="secondary">스크리닝 미실행</Badge> : null}
               </div>
               {filteredRuns.length > 0 ? (
                 <>
@@ -600,6 +715,12 @@ export function ScreeningMonitor() {
                     </>
                   )}
                 </>
+              ) : selectedDateHasPrice ? (
+                <>
+                  <p className="mt-2 text-foreground">스크리닝 미실행일</p>
+                  <p className="mt-1">{`${formatDateIso(runDateFilter)} 가격 데이터는 적재되어 있지만, 이 날짜에는 스크리닝 결과를 생성하지 않았습니다.`}</p>
+                  <p className="mt-2">후보 종목은 표시되지 않으며, 이후 해당 날짜 스크리닝 결과를 백필하면 기준일 기록에 자동으로 반영됩니다.</p>
+                </>
               ) : (
                 <p className="mt-2">필터와 일치하는 결과가 없습니다. 기준일 또는 라벨 조건을 바꿔보세요.</p>
               )}
@@ -610,6 +731,9 @@ export function ScreeningMonitor() {
               <p className="mt-2">진입가는 다음 거래일 첫 시가, 성과 평가는 최근 거래일 종가를 기준으로 계산합니다.</p>
               <p className="mt-2">
                 최고가와 최저가는 진입 이후 구간의 일중 고가와 저가를 사용하며, 최고가 수익률과 최저가 수익률은 모두 진입 시가 대비 값입니다.
+              </p>
+              <p className="mt-2">
+                우측 그래프는 진입 이후 최대 {PRICE_CHART_DAYS}영업일의 시가·고가·저가·종가 흐름을 보여주며, 표의 최고가·최저가 숫자는 최근 반영 거래일까지의 전체 구간 기준입니다.
               </p>
               <p className="mt-2">라벨 배지에 마우스를 올리면 각 라벨의 의미를 바로 볼 수 있습니다.</p>
             </div>
@@ -625,7 +749,9 @@ export function ScreeningMonitor() {
               <CardDescription>
                 {filteredRuns.length > 0
                   ? `${formatDateLabel(runDateFilter)} · ${selectedSignalLabel}`
-                  : "상단 필터에서 기준일을 선택하면 후보 종목의 성과를 볼 수 있습니다."}
+                  : selectedDateHasPrice
+                    ? `${formatDateLabel(runDateFilter)} · 스크리닝 미실행`
+                    : "상단 필터에서 기준일을 선택하면 후보 종목의 성과를 볼 수 있습니다."}
               </CardDescription>
             </div>
             {runSignalFilter !== "all" && referenceRun?.notes ? (
@@ -643,7 +769,8 @@ export function ScreeningMonitor() {
                 value={searchText}
                 onChange={(event) => setSearchText(event.target.value)}
                 className="pl-9"
-                placeholder="종목명, 종목코드, 태그, 메모 검색"
+                disabled={!selectedDateHasScreening}
+                placeholder="종목명, 종목코드, 태그, 사유 검색"
               />
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -653,6 +780,8 @@ export function ScreeningMonitor() {
                   <span>표시 {formatNumber(filteredCandidates.length)}개</span>
                   <span>정렬: 라벨 순 → 순위</span>
                 </>
+              ) : selectedDateHasPrice ? (
+                <span>이 날짜는 가격 데이터만 있고, 후보 종목은 생성되지 않았습니다.</span>
               ) : (
                 <span>기준일을 선택하면 종목 표가 표시됩니다.</span>
               )}
@@ -661,7 +790,9 @@ export function ScreeningMonitor() {
 
           {filteredRuns.length === 0 ? (
             <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-              조건에 맞는 run이 없어 아직 표시할 종목이 없습니다.
+              {selectedDateHasPrice
+                ? "이 날짜는 스크리닝 미실행일이라 표시할 후보 종목이 없습니다. 가격 데이터는 이미 적재되어 있습니다."
+                : "조건에 맞는 run이 없어 아직 표시할 종목이 없습니다."}
             </div>
           ) : candidatesLoading || performance.isLoading ? (
             <div className="space-y-2">
@@ -676,15 +807,15 @@ export function ScreeningMonitor() {
                   <TableRow>
                     <TableHead className="w-16">순위</TableHead>
                     <TableHead className="w-32">라벨</TableHead>
-                    <TableHead>종목</TableHead>
+                    <TableHead className="w-[120px] min-w-[120px]">종목</TableHead>
                     <TableHead className="w-32 text-right">진입 시가</TableHead>
                     <TableHead className="w-32 text-right">최근 거래일 종가</TableHead>
-                    <TableHead className="w-28 text-right">전일 종가 수익률</TableHead>
+                    <TableHead className="w-36 whitespace-nowrap text-right">전일 종가 수익률</TableHead>
                     <TableHead className="w-32 text-right">최고가</TableHead>
                     <TableHead className="w-28 text-right">최고가 수익률</TableHead>
                     <TableHead className="w-32 text-right">최저가</TableHead>
                     <TableHead className="w-28 text-right">최저가 수익률</TableHead>
-                    <TableHead>메모</TableHead>
+                    <TableHead className="w-[680px] min-w-[680px]">10일 가격 흐름</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -707,9 +838,9 @@ export function ScreeningMonitor() {
                           <TableCell>
                             {candidateSignal ? <SignalGuideBadge signal={candidateSignal} /> : <span>-</span>}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="w-[120px] min-w-[120px]">
                             <div>
-                              <p className="font-medium">{candidate.stock_name}</p>
+                              <p className="break-words font-medium">{candidate.stock_name}</p>
                               <p className="text-xs text-muted-foreground">
                                 {candidate.stock_code}
                                 {candidate.market ? ` · ${candidate.market}` : ""}
@@ -761,15 +892,8 @@ export function ScreeningMonitor() {
                           >
                             {formatPercent(candidate.maxDrawdownPct)}
                           </TableCell>
-                          <TableCell>
-                            <div className="space-y-1">
-                              {candidate.reason_summary ? (
-                                <p className="line-clamp-2 text-sm text-foreground">{candidate.reason_summary}</p>
-                              ) : (
-                                <p className="text-sm text-muted-foreground">메모 없음</p>
-                              )}
-                              {candidate.tags ? <p className="text-xs text-muted-foreground">{candidate.tags}</p> : null}
-                            </div>
+                          <TableCell className="w-[680px] min-w-[680px]">
+                            <CandidatePriceMiniChart candidate={candidate} />
                           </TableCell>
                         </TableRow>
                       );
@@ -889,7 +1013,291 @@ function MetricCard({
   );
 }
 
+function CandidatePriceMiniChart({ candidate }: { candidate: ScreeningPerformanceRow }) {
+  const performanceStateLabel = getPerformanceStateLabel(candidate);
+  const series = candidate.priceSeries.filter(
+    (point) => point.openPrice > 0 && point.highPrice > 0 && point.lowPrice > 0 && point.closePrice > 0
+  );
 
+  if (!candidate.entryOpenPrice || series.length === 0) {
+    return (
+      <div className="space-y-1 text-sm text-muted-foreground">
+        <p>{performanceStateLabel || "표시할 가격 데이터가 없습니다."}</p>
+        <p className="text-xs">진입 시가가 확정된 뒤부터 가격 흐름 그래프가 표시됩니다.</p>
+      </div>
+    );
+  }
 
+  const highestPoint = series.reduce((max, point) => (point.highPrice > max.highPrice ? point : max), series[0]);
+  const lowestPoint = series.reduce((min, point) => (point.lowPrice < min.lowPrice ? point : min), series[0]);
 
+  return (
+    <div className="w-full min-w-[660px] space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="rounded-full bg-up-subtle px-2 py-0.5 text-up">
+          {`10일 최고 ${formatShortDateLabel(highestPoint.tradeDate)} ${formatPrice(highestPoint.highPrice)} (${formatCompactPercent(
+            highestPoint.highReturnPct
+          )})`}
+        </span>
+        <span className="rounded-full bg-down-subtle px-2 py-0.5 text-down">
+          {`10일 최저 ${formatShortDateLabel(lowestPoint.tradeDate)} ${formatPrice(lowestPoint.lowPrice)} (${formatCompactPercent(
+            lowestPoint.lowReturnPct
+          )})`}
+        </span>
+      </div>
+      <PriceSeriesSvg series={series} entryOpenPrice={candidate.entryOpenPrice} />
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2.5 w-2.5 rounded-sm bg-foreground/80" />
+            캔들봉(시가·고가·저가·종가)
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-0.5 w-3 rounded-full bg-muted-foreground/60" />
+            진입 기준선
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-0.5 w-3 rounded-full bg-up/70" />
+            익절선 +6%
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-0.5 w-3 rounded-full bg-down/70" />
+            손절선 -4%
+          </span>
+        </div>
+        <span>{`진입 후 최대 ${PRICE_CHART_DAYS}영업일`}</span>
+        <span>{`기준선 ${formatPrice(candidate.entryOpenPrice)}`}</span>
+      </div>
+    </div>
+  );
+}
 
+function PriceSeriesSvg({
+  series,
+  entryOpenPrice,
+}: {
+  series: ScreeningPerformancePoint[];
+  entryOpenPrice: number;
+}) {
+  const width = 720;
+  const height = 176;
+  const padding = { top: 18, right: 22, bottom: 34, left: 18 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const step = series.length > 1 ? plotWidth / (series.length - 1) : 0;
+  const targetPrice = entryOpenPrice * 1.06;
+  const stopPrice = entryOpenPrice * 0.96;
+  const priceValues = [
+    entryOpenPrice,
+    targetPrice,
+    stopPrice,
+    ...series.flatMap((point) => [point.openPrice, point.highPrice, point.lowPrice, point.closePrice]),
+  ].filter((value) => value > 0);
+  const rawMin = Math.min(...priceValues);
+  const rawMax = Math.max(...priceValues);
+  const paddingRange = Math.max((rawMax - rawMin) * 0.12, rawMax * 0.02, 1);
+  const scaledMin = Math.max(0, rawMin - paddingRange);
+  const scaledMax = rawMax + paddingRange;
+  const scaleRange = Math.max(scaledMax - scaledMin, 1);
+  const baselineY = padding.top + ((scaledMax - entryOpenPrice) / scaleRange) * plotHeight;
+  const markerTextStroke = "rgba(255,255,255,0.92)";
+  const highestIndex = series.reduce((maxIndex, point, index, items) => {
+    return point.highPrice > items[maxIndex].highPrice ? index : maxIndex;
+  }, 0);
+  const lowestIndex = series.reduce((minIndex, point, index, items) => {
+    return point.lowPrice < items[minIndex].lowPrice ? index : minIndex;
+  }, 0);
+
+  const getX = (index: number) => (series.length === 1 ? padding.left + plotWidth / 2 : padding.left + step * index);
+  const getY = (price: number) => padding.top + ((scaledMax - price) / scaleRange) * plotHeight;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="block h-40 w-full rounded-xl border bg-background/80">
+      {[0.25, 0.5, 0.75].map((ratio) => {
+        const y = padding.top + plotHeight * ratio;
+        return (
+          <line
+            key={`grid-${ratio}`}
+            x1={padding.left}
+            x2={width - padding.right}
+            y1={y}
+            y2={y}
+            stroke="hsl(var(--border) / 0.7)"
+            strokeDasharray="2 4"
+          />
+        );
+      })}
+      <line
+        x1={padding.left}
+        x2={width - padding.right}
+        y1={baselineY}
+        y2={baselineY}
+        stroke="hsl(var(--muted-foreground) / 0.45)"
+        strokeDasharray="4 4"
+      />
+      <line
+        x1={padding.left}
+        x2={width - padding.right}
+        y1={getY(targetPrice)}
+        y2={getY(targetPrice)}
+        stroke="hsl(var(--up) / 0.72)"
+        strokeDasharray="6 4"
+        strokeWidth="1.3"
+      />
+      <line
+        x1={padding.left}
+        x2={width - padding.right}
+        y1={getY(stopPrice)}
+        y2={getY(stopPrice)}
+        stroke="hsl(var(--down) / 0.72)"
+        strokeDasharray="6 4"
+        strokeWidth="1.3"
+      />
+      <text
+        x={width - padding.right}
+        y={Math.max(12, getY(targetPrice) - 6)}
+        textAnchor="end"
+        fontSize="10"
+        fontWeight="600"
+        fill="hsl(var(--up))"
+      >
+        익절 +6%
+      </text>
+      <text
+        x={width - padding.right}
+        y={Math.min(height - 10, getY(stopPrice) - 6)}
+        textAnchor="end"
+        fontSize="10"
+        fontWeight="600"
+        fill="hsl(var(--down))"
+      >
+        손절 -4%
+      </text>
+      {series.map((point, index) => {
+        const x = getX(index);
+        const openY = getY(point.openPrice);
+        const highY = getY(point.highPrice);
+        const lowY = getY(point.lowPrice);
+        const closeY = getY(point.closePrice);
+        const isUpCandle = point.closePrice >= point.openPrice;
+        const bodyTop = Math.min(openY, closeY);
+        const bodyHeight = Math.max(3, Math.abs(closeY - openY));
+        const bodyWidth = Math.max(8, Math.min(16, plotWidth / Math.max(series.length * 2.3, 1)));
+        const candleColor = isUpCandle ? "hsl(var(--up))" : "hsl(var(--down))";
+
+        return (
+          <g key={`${point.tradeDate}-candle`}>
+            <line
+              x1={x}
+              x2={x}
+              y1={highY}
+              y2={lowY}
+              stroke={candleColor}
+              strokeOpacity="1"
+              strokeWidth="1.2"
+              vectorEffect="non-scaling-stroke"
+            />
+            <rect
+              x={x - bodyWidth / 2}
+              y={bodyTop}
+              width={bodyWidth}
+              height={bodyHeight}
+              rx={2}
+              fill={candleColor}
+              stroke={candleColor}
+              strokeOpacity="1"
+              strokeWidth="1.1"
+              vectorEffect="non-scaling-stroke"
+            />
+            <title>
+              {`${formatDateIso(point.tradeDate)} 시 ${formatPrice(point.openPrice)} · 고 ${formatPrice(point.highPrice)} · 저 ${formatPrice(
+                point.lowPrice
+              )} · 종 ${formatPrice(point.closePrice)} · 종가수익률 ${formatPercent(point.closeReturnPct)}`}
+            </title>
+            <line
+              x1={x}
+              x2={x}
+              y1={padding.top}
+              y2={height - padding.bottom}
+              stroke="hsl(var(--border) / 0.4)"
+              strokeDasharray="2 5"
+            />
+            <rect
+              x={x - Math.max(10, plotWidth / Math.max(series.length * 2.4, 1))}
+              y={padding.top}
+              width={Math.max(20, plotWidth / Math.max(series.length * 1.2, 1))}
+              height={plotHeight}
+              fill="transparent"
+            />
+          </g>
+        );
+      })}
+      <PriceMarker
+        x={getX(highestIndex)}
+        y={getY(series[highestIndex].highPrice)}
+        label={`최고 ${formatCompactPercent(series[highestIndex].highReturnPct)}`}
+        tone="up"
+        position="top"
+        textStroke={markerTextStroke}
+      />
+      <PriceMarker
+        x={getX(lowestIndex)}
+        y={getY(series[lowestIndex].lowPrice)}
+        label={`최저 ${formatCompactPercent(series[lowestIndex].lowReturnPct)}`}
+        tone="down"
+        position="bottom"
+        textStroke={markerTextStroke}
+      />
+      {series.map((point, index) => (
+          <text
+            key={`${point.tradeDate}-label`}
+            x={getX(index)}
+            y={height - 8}
+            textAnchor="middle"
+            fontSize="9"
+            fill="hsl(var(--muted-foreground))"
+          >
+            {formatShortDateLabel(point.tradeDate)}
+          </text>
+        ))}
+    </svg>
+  );
+}
+
+function PriceMarker({
+  x,
+  y,
+  label,
+  tone,
+  position,
+  textStroke,
+}: {
+  x: number;
+  y: number;
+  label: string;
+  tone: "up" | "down";
+  position: "top" | "bottom";
+  textStroke: string;
+}) {
+  const markerColor = tone === "up" ? "hsl(var(--up))" : "hsl(var(--down))";
+  const textY = position === "top" ? Math.max(12, y - 8) : Math.min(104, y + 14);
+
+  return (
+    <g>
+      <circle cx={x} cy={y} r={3.2} fill={markerColor} stroke="white" strokeWidth={1.4} />
+      <text
+        x={x}
+        y={textY}
+        textAnchor="middle"
+        fontSize="9.5"
+        fontWeight="600"
+        fill={markerColor}
+        stroke={textStroke}
+        strokeWidth={3}
+        paintOrder="stroke"
+      >
+        {label}
+      </text>
+    </g>
+  );
+}

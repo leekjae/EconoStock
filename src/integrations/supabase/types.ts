@@ -318,6 +318,27 @@ export type Database = {
         }
         Relationships: []
       }
+      screening_price_dates: {
+        Row: {
+          collected_at: string
+          row_count: number
+          source: string
+          trade_date: string
+        }
+        Insert: {
+          collected_at?: string
+          row_count?: number
+          source?: string
+          trade_date: string
+        }
+        Update: {
+          collected_at?: string
+          row_count?: number
+          source?: string
+          trade_date?: string
+        }
+        Relationships: []
+      }
       screening_runs: {
         Row: {
           as_of_date: string

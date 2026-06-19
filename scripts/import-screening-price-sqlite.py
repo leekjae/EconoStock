@@ -54,6 +54,12 @@ def compact_date(iso_date: str) -> str:
     return iso_date.replace("-", "")
 
 
+def shift_iso_date(iso_date: str, day_offset: int) -> str:
+    base = dt.date.fromisoformat(iso_date)
+    shifted = base + dt.timedelta(days=day_offset)
+    return shifted.isoformat()
+
+
 def load_env_file(path: Path) -> None:
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -124,6 +130,52 @@ def fetch_first_run_date(supabase_url: str, service_key: str) -> str | None:
     return normalize_sqlite_date(str(rows[0].get("as_of_date", "")))
 
 
+def fetch_latest_imported_price_date(supabase_url: str, service_key: str) -> str | None:
+    params = urllib.parse.urlencode(
+        {
+            "select": "trade_date",
+            "order": "trade_date.desc",
+            "limit": "1",
+        }
+    )
+    rows = get_json(f"{supabase_url}/rest/v1/screening_price_daily?{params}", build_headers(service_key))
+    if not isinstance(rows, list) or not rows:
+        return None
+    return normalize_sqlite_date(str(rows[0].get("trade_date", "")))
+
+
+def fetch_imported_price_dates(
+    supabase_url: str,
+    service_key: str,
+    *,
+    start_date: str,
+    end_date: str,
+) -> set[str]:
+    headers = build_headers(service_key)
+    page_size = PAGE_SIZE
+    offset = 0
+    imported_dates: set[str] = set()
+
+    while True:
+        params = (
+            f"select=trade_date&trade_date=gte.{compact_date(start_date)}"
+            f"&trade_date=lte.{compact_date(end_date)}"
+            f"&order=trade_date.asc&limit={page_size}&offset={offset}"
+        )
+        rows = get_json(f"{supabase_url}/rest/v1/screening_price_dates?{params}", headers)
+        if not isinstance(rows, list) or not rows:
+            break
+        for row in rows:
+            trade_date = str(row.get("trade_date", "")).strip()
+            if trade_date:
+                imported_dates.add(trade_date)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    return imported_dates
+
+
 def fetch_candidate_codes(supabase_url: str, service_key: str) -> list[str]:
     headers = build_headers(service_key)
     codes: set[str] = set()
@@ -191,6 +243,31 @@ def prepare_selected_codes_table(conn: sqlite3.Connection, codes: list[str]) -> 
     )
 
 
+def prepare_selected_dates_table(conn: sqlite3.Connection, trade_dates: list[str]) -> None:
+    conn.execute("DROP TABLE IF EXISTS selected_screening_dates")
+    conn.execute("CREATE TEMP TABLE selected_screening_dates (trade_date TEXT PRIMARY KEY)")
+    conn.executemany(
+        "INSERT OR IGNORE INTO selected_screening_dates (trade_date) VALUES (?)",
+        [(trade_date,) for trade_date in trade_dates],
+    )
+
+
+def fetch_sqlite_trade_dates(conn: sqlite3.Connection, *, start_date: str, end_date: str) -> list[str]:
+    sql = """
+        SELECT DISTINCT md.trade_date
+        FROM market_daily AS md
+        INNER JOIN selected_screening_codes AS codes
+          ON codes.ticker = md.ticker
+        WHERE md.trade_date >= ? AND md.trade_date <= ?
+        ORDER BY md.trade_date
+    """
+    cursor = conn.execute(sql, (start_date, end_date))
+    try:
+        return [str(row[0]) for row in cursor.fetchall() if row and row[0]]
+    finally:
+        cursor.close()
+
+
 def count_trade_days(conn: sqlite3.Connection, *, start_date: str, end_date: str) -> int:
     sql = """
         SELECT COUNT(DISTINCT md.trade_date)
@@ -200,6 +277,18 @@ def count_trade_days(conn: sqlite3.Connection, *, start_date: str, end_date: str
         WHERE md.trade_date >= ? AND md.trade_date <= ?
     """
     return int(conn.execute(sql, (start_date, end_date)).fetchone()[0] or 0)
+
+
+def count_rows_for_selected_dates(conn: sqlite3.Connection) -> int:
+    sql = """
+        SELECT COUNT(*)
+        FROM market_daily AS md
+        INNER JOIN selected_screening_codes AS codes
+          ON codes.ticker = md.ticker
+        INNER JOIN selected_screening_dates AS dates
+          ON dates.trade_date = md.trade_date
+    """
+    return int(conn.execute(sql).fetchone()[0] or 0)
 
 
 def count_rows(conn: sqlite3.Connection, *, start_date: str, end_date: str) -> int:
@@ -253,6 +342,45 @@ def iter_rows(
         cursor.close()
 
 
+def iter_rows_for_selected_dates(
+    conn: sqlite3.Connection,
+    *,
+    fetch_size: int,
+) -> Iterable[list[sqlite3.Row]]:
+    sql = """
+        SELECT
+          md.trade_date,
+          md.ticker AS stock_code,
+          COALESCE(univ.name, '') AS stock_name,
+          COALESCE(univ.market, '') AS market,
+          CAST(ROUND(COALESCE(md.open, 0)) AS INTEGER) AS open_price,
+          CAST(ROUND(COALESCE(md.high, 0)) AS INTEGER) AS high_price,
+          CAST(ROUND(COALESCE(md.low, 0)) AS INTEGER) AS low_price,
+          CAST(ROUND(COALESCE(md.close, 0)) AS INTEGER) AS close_price,
+          CAST(ROUND(COALESCE(md.volume, 0)) AS INTEGER) AS volume,
+          CAST(ROUND(COALESCE(md.value, 0)) AS INTEGER) AS value,
+          COALESCE(md.source, 'screening_sqlite') AS source
+        FROM market_daily AS md
+        INNER JOIN selected_screening_codes AS codes
+          ON codes.ticker = md.ticker
+        INNER JOIN selected_screening_dates AS dates
+          ON dates.trade_date = md.trade_date
+        LEFT JOIN ticker_universe AS univ
+          ON univ.trade_date = md.trade_date
+         AND univ.ticker = md.ticker
+        ORDER BY md.trade_date, md.ticker
+    """
+    cursor = conn.execute(sql)
+    try:
+        while True:
+            rows = cursor.fetchmany(fetch_size)
+            if not rows:
+                break
+            yield rows
+    finally:
+        cursor.close()
+
+
 def fetch_sample_rows(conn: sqlite3.Connection, *, start_date: str, end_date: str, limit: int = 5) -> list[sqlite3.Row]:
     sql = """
         SELECT
@@ -284,6 +412,38 @@ def fetch_sample_rows(conn: sqlite3.Connection, *, start_date: str, end_date: st
         cursor.close()
 
 
+def fetch_sample_rows_for_selected_dates(conn: sqlite3.Connection, *, limit: int = 5) -> list[sqlite3.Row]:
+    sql = """
+        SELECT
+          md.trade_date,
+          md.ticker AS stock_code,
+          COALESCE(univ.name, '') AS stock_name,
+          COALESCE(univ.market, '') AS market,
+          CAST(ROUND(COALESCE(md.open, 0)) AS INTEGER) AS open_price,
+          CAST(ROUND(COALESCE(md.high, 0)) AS INTEGER) AS high_price,
+          CAST(ROUND(COALESCE(md.low, 0)) AS INTEGER) AS low_price,
+          CAST(ROUND(COALESCE(md.close, 0)) AS INTEGER) AS close_price,
+          CAST(ROUND(COALESCE(md.volume, 0)) AS INTEGER) AS volume,
+          CAST(ROUND(COALESCE(md.value, 0)) AS INTEGER) AS value,
+          COALESCE(md.source, 'screening_sqlite') AS source
+        FROM market_daily AS md
+        INNER JOIN selected_screening_codes AS codes
+          ON codes.ticker = md.ticker
+        INNER JOIN selected_screening_dates AS dates
+          ON dates.trade_date = md.trade_date
+        LEFT JOIN ticker_universe AS univ
+          ON univ.trade_date = md.trade_date
+         AND univ.ticker = md.ticker
+        ORDER BY md.trade_date, md.ticker
+        LIMIT ?
+    """
+    cursor = conn.execute(sql, (limit,))
+    try:
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+
+
 def row_to_payload(row: sqlite3.Row) -> dict:
     return {
         "trade_date": compact_date(str(row["trade_date"])),
@@ -304,6 +464,27 @@ def row_to_payload(row: sqlite3.Row) -> dict:
 def chunked(items: list[dict], size: int) -> Iterable[list[dict]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def upsert_price_date_rows(
+    supabase_url: str,
+    service_key: str,
+    *,
+    trade_dates: list[str],
+) -> None:
+    if not trade_dates:
+        return
+
+    payload = [
+        {
+            "trade_date": compact_date(trade_date),
+            "row_count": 0,
+            "source": STATUS_SOURCE,
+            "collected_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        for trade_date in trade_dates
+    ]
+    post_json(f"{supabase_url}/rest/v1/screening_price_dates", build_upsert_headers(service_key), payload)
 
 
 def main() -> int:
@@ -335,21 +516,21 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
 
     try:
-        effective_start = start_date or fetch_first_run_date(supabase_url, service_key)
-        if not effective_start:
+        first_run_date = fetch_first_run_date(supabase_url, service_key)
+        if not first_run_date:
             print("[screening_price] No screening runs found in Supabase. Skipping price import.")
             return 0
 
+        effective_start = start_date or first_run_date
         effective_end = end_date or fetch_sqlite_market_max_date(conn)
         if not effective_end:
             print("[screening_price] No market_daily rows found in SQLite.", file=sys.stderr)
             return 1
         if effective_start > effective_end:
-            print(
-                f"[screening_price] effective start {effective_start} is after effective end {effective_end}.",
-                file=sys.stderr,
-            )
-            return 1
+            print("[screening_price] No valid screening price date range to inspect.")
+            print(f"  start_date     : {effective_start}")
+            print(f"  end_date       : {effective_end}")
+            return 0
 
         candidate_codes = fetch_candidate_codes(supabase_url, service_key)
         if not candidate_codes:
@@ -357,15 +538,62 @@ def main() -> int:
             return 0
 
         prepare_selected_codes_table(conn, candidate_codes)
-        trade_days = count_trade_days(conn, start_date=effective_start, end_date=effective_end)
-        total_rows = count_rows(conn, start_date=effective_start, end_date=effective_end)
+        sqlite_trade_dates = fetch_sqlite_trade_dates(conn, start_date=effective_start, end_date=effective_end)
+        if not sqlite_trade_dates:
+            print("[screening_price] No matching SQLite price rows found for screening candidates.", file=sys.stderr)
+            return 1
+
+        coverage_table_available = True
+        latest_imported_price_date = None
+        try:
+            imported_trade_dates = fetch_imported_price_dates(
+                supabase_url,
+                service_key,
+                start_date=effective_start,
+                end_date=effective_end,
+            )
+            missing_trade_dates = [trade_date for trade_date in sqlite_trade_dates if compact_date(trade_date) not in imported_trade_dates]
+            start_mode = "gap_fill_by_trade_date" if not start_date else "explicit_gap_fill"
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if "screening_price_dates" not in body:
+                raise
+            coverage_table_available = False
+            latest_imported_price_date = None if start_date else fetch_latest_imported_price_date(supabase_url, service_key)
+            if start_date:
+                fallback_start = start_date
+                start_mode = "explicit"
+            elif latest_imported_price_date:
+                fallback_start = max(first_run_date, shift_iso_date(latest_imported_price_date, 1))
+                start_mode = f"incremental_after_{compact_date(latest_imported_price_date)}"
+            else:
+                fallback_start = first_run_date
+                start_mode = "initial_backfill"
+
+            sqlite_trade_dates = fetch_sqlite_trade_dates(conn, start_date=fallback_start, end_date=effective_end)
+            missing_trade_dates = sqlite_trade_dates
+            effective_start = fallback_start
+
+        if not missing_trade_dates:
+            print("[screening_price] No new screening price dates to import.")
+            print(f"  start_mode     : {start_mode}")
+            print(f"  start_date     : {effective_start}")
+            print(f"  end_date       : {effective_end}")
+            print(f"  imported_dates : {len(sqlite_trade_dates):,}")
+            return 0
+
+        prepare_selected_dates_table(conn, missing_trade_dates)
+        trade_days = len(missing_trade_dates)
+        total_rows = count_rows_for_selected_dates(conn)
 
         print("[screening_price] import plan")
         print(f"  db             : {db_path}")
+        print(f"  start_mode     : {start_mode}")
         print(f"  start_date     : {effective_start}")
         print(f"  end_date       : {effective_end}")
         print(f"  candidate_codes: {len(candidate_codes):,}")
         print(f"  trade_days     : {trade_days:,}")
+        print(f"  missing_dates  : {trade_days:,}")
         print(f"  total_rows     : {total_rows:,}")
         print(f"  chunk_size     : {args.chunk_size:,}")
 
@@ -374,8 +602,13 @@ def main() -> int:
             return 1
 
         if args.dry_run:
-            sample_rows = fetch_sample_rows(conn, start_date=effective_start, end_date=effective_end, limit=5)
+            sample_rows = fetch_sample_rows_for_selected_dates(conn, limit=5)
             print("  mode           : dry-run")
+            print("  missing_trade_dates:")
+            for trade_date in missing_trade_dates[:10]:
+                print(f"    {compact_date(trade_date)}")
+            if len(missing_trade_dates) > 10:
+                print(f"    ... ({len(missing_trade_dates) - 10:,} more)")
             print("  sample         :")
             for row in sample_rows:
                 payload = row_to_payload(row)
@@ -399,12 +632,19 @@ def main() -> int:
 
         uploaded_rows = 0
         try:
-            for rows in iter_rows(conn, start_date=effective_start, end_date=effective_end, fetch_size=args.chunk_size):
+            for rows in iter_rows_for_selected_dates(conn, fetch_size=args.chunk_size):
                 payload_rows = [row_to_payload(row) for row in rows]
                 for payload in chunked(payload_rows, args.chunk_size):
                     post_json(f"{supabase_url}/rest/v1/screening_price_daily", upsert_headers, payload)
                     uploaded_rows += len(payload)
                     print(f"[screening_price] uploaded {uploaded_rows:,}/{total_rows:,}")
+
+            if coverage_table_available:
+                upsert_price_date_rows(
+                    supabase_url,
+                    service_key,
+                    trade_dates=missing_trade_dates,
+                )
         except Exception as exc:
             upsert_sync_status(
                 supabase_url,

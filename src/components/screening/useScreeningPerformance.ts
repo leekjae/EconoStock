@@ -9,6 +9,18 @@ type ScreeningCandidate = Tables<"screening_candidates">;
 type ScreeningPriceDaily = Tables<"screening_price_daily">;
 
 const PRICE_PAGE_SIZE = 1000;
+const CHART_TRADING_DAYS = 10;
+
+export interface ScreeningPerformancePoint {
+  tradeDate: string;
+  openPrice: number;
+  highPrice: number;
+  lowPrice: number;
+  closePrice: number;
+  closeReturnPct: number | null;
+  highReturnPct: number | null;
+  lowReturnPct: number | null;
+}
 
 export interface ScreeningPerformanceRow extends ScreeningCandidate {
   entryTradeDate: string | null;
@@ -16,10 +28,13 @@ export interface ScreeningPerformanceRow extends ScreeningCandidate {
   latestTradeDate: string | null;
   latestClosePrice: number | null;
   highestPrice: number | null;
+  highestTradeDate: string | null;
   lowestPrice: number | null;
+  lowestTradeDate: string | null;
   maxReturnPct: number | null;
   maxDrawdownPct: number | null;
   returnPct: number | null;
+  priceSeries: ScreeningPerformancePoint[];
   performanceStatus: "ready" | "awaiting_entry" | "entry_missing" | "latest_missing";
 }
 
@@ -50,6 +65,11 @@ function shiftCompactDate(ymd: string, dayOffset: number) {
 function normalizeStockCode(stockCode: string) {
   const digits = String(stockCode || "").replace(/[^\d]/g, "");
   return digits.padStart(6, "0");
+}
+
+function toPositiveNumber(value: number | string | null | undefined) {
+  const numeric = Number(value || 0);
+  return numeric > 0 ? numeric : 0;
 }
 
 function buildQuoteMap(rows: ScreeningPriceDaily[] | undefined) {
@@ -157,6 +177,7 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
       const entryRow =
         quoteRows.find((row) => row.trade_date > run.as_of_date && Number(row.open_price) > 0) ?? null;
       const effectiveRows = entryRow ? quoteRows.filter((row) => row.trade_date >= entryRow.trade_date) : [];
+      const chartRows = effectiveRows.slice(0, CHART_TRADING_DAYS);
       const latestRow =
         [...effectiveRows].reverse().find((row) => Number(row.close_price) > 0) ?? null;
 
@@ -172,24 +193,62 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
 
       const entryOpenPrice = entryRow ? Number(entryRow.open_price) : null;
       const latestClosePrice = latestRow ? Number(latestRow.close_price) : null;
-      const highestPrice =
+      const highestPoint =
         entryOpenPrice && effectiveRows.length > 0
-          ? effectiveRows.reduce((max, row) => Math.max(max, Number(row.high_price || 0)), 0)
+          ? effectiveRows.reduce<{ price: number; tradeDate: string } | null>((max, row) => {
+              const high = toPositiveNumber(row.high_price);
+              if (high <= 0) {
+                return max;
+              }
+              if (!max || high > max.price) {
+                return { price: high, tradeDate: row.trade_date };
+              }
+              return max;
+            }, null)
           : null;
-      const lowestPrice =
+      const lowestPoint =
         entryOpenPrice && effectiveRows.length > 0
-          ? effectiveRows.reduce((min, row) => {
-              const low = Number(row.low_price || 0);
-              if (low <= 0) return min;
-              return min === null ? low : Math.min(min, low);
-            }, null as number | null)
+          ? effectiveRows.reduce<{ price: number; tradeDate: string } | null>((min, row) => {
+              const low = toPositiveNumber(row.low_price);
+              if (low <= 0) {
+                return min;
+              }
+              if (!min || low < min.price) {
+                return { price: low, tradeDate: row.trade_date };
+              }
+              return min;
+            }, null)
           : null;
+      const highestPrice = highestPoint?.price ?? null;
+      const highestTradeDate = highestPoint?.tradeDate ?? null;
+      const lowestPrice = lowestPoint?.price ?? null;
+      const lowestTradeDate = lowestPoint?.tradeDate ?? null;
       const returnPct =
         entryOpenPrice && latestClosePrice ? ((latestClosePrice / entryOpenPrice) - 1) * 100 : null;
       const maxReturnPct =
         entryOpenPrice && highestPrice ? ((highestPrice / entryOpenPrice) - 1) * 100 : null;
       const maxDrawdownPct =
         entryOpenPrice && lowestPrice ? ((lowestPrice / entryOpenPrice) - 1) * 100 : null;
+      const priceSeries =
+        entryOpenPrice && chartRows.length > 0
+          ? chartRows.map((row) => {
+              const openPrice = toPositiveNumber(row.open_price);
+              const highPrice = toPositiveNumber(row.high_price);
+              const lowPrice = toPositiveNumber(row.low_price);
+              const closePrice = toPositiveNumber(row.close_price);
+
+              return {
+                tradeDate: row.trade_date,
+                openPrice,
+                highPrice,
+                lowPrice,
+                closePrice,
+                closeReturnPct: closePrice ? ((closePrice / entryOpenPrice) - 1) * 100 : null,
+                highReturnPct: highPrice ? ((highPrice / entryOpenPrice) - 1) * 100 : null,
+                lowReturnPct: lowPrice ? ((lowPrice / entryOpenPrice) - 1) * 100 : null,
+              };
+            })
+          : [];
 
       return {
         ...candidate,
@@ -198,10 +257,13 @@ export function useScreeningPerformance(run: ScreeningRun | null, candidates: Sc
         latestTradeDate: latestRow?.trade_date ?? null,
         latestClosePrice,
         highestPrice,
+        highestTradeDate,
         lowestPrice,
+        lowestTradeDate,
         maxReturnPct,
         maxDrawdownPct,
         returnPct,
+        priceSeries,
         performanceStatus,
       };
     });
