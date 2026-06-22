@@ -1,4 +1,4 @@
-# EconoStock Workspace
+﻿# EconoStock Workspace
 
 EconoStock is a React + Vite + Supabase workspace for monitoring KRX market data, investor flow, theme data, and our own screening results.
 
@@ -44,25 +44,34 @@ VITE_SUPABASE_URL=https://your-project-id.supabase.co
 
 ### Investor flow from Screening SQLite
 
-The current `투자자별 매매` screen is designed around the local Screening project's `investor_flow`
+The current `?ъ옄?먮퀎 留ㅻℓ` screen is designed around the local Screening project's `investor_flow`
 dataset, not the older KRX snapshot collector.
 
 1. Apply `supabase/migrations/20260618000100_add_investor_flow_daily_tables.sql`
 2. Apply `supabase/migrations/20260618000200_add_investor_flow_ranked_function.sql`
-3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`
-4. Import the local SQLite data
+3. Apply `supabase/migrations/20260622000100_add_investor_flow_daily_counts_function.sql`
+4. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`
+5. Import the local SQLite data
 
 ```bash
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --limit-days 60 --dry-run
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --limit-days 60
+npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --dry-run
+npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite
 ```
+
+The default command is now safe for re-runs. When no date filter is provided, it compares local SQLite dates against Supabase and uploads only missing or mismatched trade dates.
 
 If `D:/Codex/secrets/econostock-sync.env` exists, the importer will load it automatically.
 
-For a full backfill:
+For a one-day retry after a partial failure:
 
 ```bash
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite
+npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --start-date 2026-06-19 --end-date 2026-06-19
+```
+
+For a full backfill, add the explicit safety flag:
+
+```bash
+npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --allow-full-history
 ```
 
 ### Investor snapshots
@@ -172,6 +181,7 @@ Required migrations for a fresh project:
 - `supabase/migrations/20260617000100_add_screening_monitor_tables.sql`
 - `supabase/migrations/20260618000100_add_investor_flow_daily_tables.sql`
 - `supabase/migrations/20260618000200_add_investor_flow_ranked_function.sql`
+- `supabase/migrations/20260622000100_add_investor_flow_daily_counts_function.sql`
 
 The KRX and investor screens also depend on these Edge Functions being deployed:
 
@@ -217,3 +227,4 @@ Notes:
 - If `VITE_BASE_PATH` is empty, the build automatically uses `/<repository>/` on GitHub Actions.
 - If you later connect a custom domain, set `VITE_BASE_PATH` to `/`.
 - In GitHub, open `Settings -> Pages` and set `Source` to `GitHub Actions`.
+

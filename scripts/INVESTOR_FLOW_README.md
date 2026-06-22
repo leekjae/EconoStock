@@ -1,8 +1,8 @@
-# Investor Flow Import
+﻿# Investor Flow Import
 
 ## Goal
 
-The current `투자자별 매매` page uses the Screening project's local SQLite database:
+The current `investor flow` page uses the Screening project's local SQLite database:
 
 - source DB: `D:\Codex\Screening\data\market_data.sqlite`
 - source table: `investor_flow`
@@ -28,6 +28,7 @@ Apply these migrations in Supabase first:
 ```text
 supabase/migrations/20260618000100_add_investor_flow_daily_tables.sql
 supabase/migrations/20260618000200_add_investor_flow_ranked_function.sql
+supabase/migrations/20260622000100_add_investor_flow_daily_counts_function.sql
 ```
 
 ## Required environment variables
@@ -46,25 +47,40 @@ D:\Codex\secrets\econostock-sync.env
 You can also pass a custom file explicitly:
 
 ```cmd
-npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --env-file D:\Codex\secrets\econostock-sync.env --limit-days 60
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --env-file D:\Codex\secrets\econostock-sync.env --dry-run
 ```
 
-## Dry run
+## Recommended default sync
 
 ```cmd
-npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --limit-days 60 --dry-run
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --dry-run
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite
 ```
 
-## Initial test import
+When no date filter is provided, the importer now compares local SQLite date counts against Supabase and uploads only missing or mismatched trade dates.
+
+## Safe partial retry
+
+If a previous upload failed partway through, rerun only the missing trading day or date range:
 
 ```cmd
-npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --limit-days 60
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --start-date 20260619 --end-date 20260619
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --start-date 20260618 --end-date 20260619 --dry-run
+```
+
+## Optional latest-N test import
+
+```cmd
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --limit-days 5 --dry-run
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --limit-days 5
 ```
 
 ## Full import
 
+Full-history upload is still supported, but it now requires an explicit safety flag:
+
 ```cmd
-npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite
+npm run import:investor-flow -- --db D:\Codex\Screening\data\market_data.sqlite --allow-full-history
 ```
 
 ## Optional date range import
