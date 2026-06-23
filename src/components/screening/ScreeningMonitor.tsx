@@ -505,8 +505,8 @@ export function ScreeningMonitor() {
           </div>
           <div className="rounded-2xl border bg-background p-4 text-sm text-muted-foreground">
             <p>1. Supabase SQL Editor에서 스크리닝 마이그레이션을 먼저 적용합니다.</p>
-            <p>2. `screening.csv` 또는 `daily_action_sheet_*.csv` 파일을 적재합니다.</p>
-            <p>3. 이어서 screening price SQLite 동기화를 한 번 실행합니다.</p>
+            <p>2. 별도 운영 파이프라인에서 스크리닝 결과와 가격 데이터를 먼저 적재합니다.</p>
+            <p>3. 적재 대상 테이블과 함수가 모두 준비됐는지 확인합니다.</p>
             <p>4. 적재가 끝나면 페이지를 새로고침합니다.</p>
           </div>
         </CardContent>
@@ -525,31 +525,30 @@ export function ScreeningMonitor() {
             <div>
               <CardTitle className="text-xl">아직 적재된 스크리닝 결과가 없습니다</CardTitle>
               <CardDescription>
-                스크리닝 CSV 또는 <code className="font-mono">output</code> 폴더를 적재하면, 대시보드에서 다음 거래일 시가 기준
-                성과를 추적할 수 있습니다.
+                별도 운영 파이프라인에서 스크리닝 결과를 적재하면, 대시보드에서 다음 거래일 시가 기준 성과를 추적할 수 있습니다.
               </CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-2xl border bg-background p-4">
-            <p className="text-sm font-medium">지원 입력 형식</p>
+            <p className="text-sm font-medium">데이터 준비 조건</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              1. 정규화된 <code className="font-mono">screening.csv</code> 단일 파일
+              1. 기준일별 스크리닝 결과가 <code className="font-mono">screening_runs</code> 와{" "}
+              <code className="font-mono">screening_candidates</code>에 적재되어 있어야 합니다.
             </p>
             <p className="text-sm text-muted-foreground">
-              2. <code className="font-mono">daily_action_sheet_YYYY-MM-DD.csv</code>
+              2. 성과표를 위해 <code className="font-mono">screening_price_daily</code> 가격 테이블도 함께 준비되어야 합니다.
             </p>
             <p className="text-sm text-muted-foreground">
-              3. 여러 일자 CSV가 들어 있는 <code className="font-mono">output</code> 폴더
+              3. 이 공개 웹 레포에는 운영용 로컬 경로와 서비스 키를 두지 않는 구성을 권장합니다.
             </p>
           </div>
           <div className="rounded-2xl border bg-background p-4">
-            <p className="text-sm font-medium">CMD 예시</p>
-            <div className="mt-2 space-y-2 font-mono text-xs text-muted-foreground">
-              <p>npm run import:screening -- --file .\data\screening.csv --dry-run</p>
-              <p>npm run import:screening -- --file D:\Codex\Screening\output --dry-run</p>
-              <p>npm run import:screening -- --file D:\Codex\Screening\output</p>
+            <p className="text-sm font-medium">운영 분리 권장</p>
+            <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+              <p>운영 스크립트, 백필 배치, 로컬 SQLite 연동 코드는 별도 비공개 저장소에서 관리하는 편이 안전합니다.</p>
+              <p>이 공개 웹 레포는 화면 코드, 배포 설정, 브라우저용 환경변수만 유지하는 구조가 가장 단순합니다.</p>
             </div>
           </div>
         </CardContent>

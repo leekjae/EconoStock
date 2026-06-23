@@ -8,15 +8,10 @@
     "build": "vite build",
     "postbuild": "node scripts/prepare-pages.mjs",
     "build:dev": "vite build --mode development",
-    "import:screening": "node scripts/import-screening-csv.mjs",
-    "sync:screening": "node scripts/sync-screening-output.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "import:investor": "node scripts/import-investor-csv.mjs",
-    "import:investor-flow": "python scripts/import-investor-flow-sqlite.py",
-    "import:screening-price": "python scripts/import-screening-price-sqlite.py"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

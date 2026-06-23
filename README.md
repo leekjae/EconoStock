@@ -1,18 +1,24 @@
-Ôªø# EconoStock Workspace
+# EconoStock
 
-EconoStock is a React + Vite + Supabase workspace for monitoring KRX market data, investor flow, theme data, and our own screening results.
+EconoStock is a React + Vite dashboard for browsing our market workspace on the web.
 
-## Current app structure
+## What this public repo contains
 
-- `/` : single-page dashboard with left navigation
-- all major views are opened inside the main workspace layout
-- GitHub Pages deployment is supported
+- web UI and layout
+- Supabase client-side queries
+- GitHub Pages deployment workflow
+- shared schema migrations needed by the frontend
 
-The main workspace now focuses on:
+## What is intentionally not documented here
 
-- market overview
-- investor flow monitoring
-- screening result monitoring
+The screening engine, local SQLite handling, backfill jobs, service-role imports, and machine-specific sync commands are treated as private operations. Those workflows should live in a separate private repository or private local workspace.
+
+## Main screens
+
+- `»®`
+- `Ω∫≈©∏Æ¥◊ ¡æ∏Ò`
+- `≈ı¿⁄¿⁄∫∞ ∏≈∏≈`
+- `≈◊∏∂∫∞ ¡æ∏Ò`
 
 ## Tech stack
 
@@ -40,141 +46,13 @@ VITE_SUPABASE_PUBLISHABLE_KEY=your-publishable-anon-key
 VITE_SUPABASE_URL=https://your-project-id.supabase.co
 ```
 
-## Data imports
+Only publishable browser keys belong in this repo. Service-role keys and local sync secrets should stay outside the public repository.
 
-### Investor flow from Screening SQLite
-
-The current `?—äÏòÑ?Î®ÆÌÄé Ôßç„Öª‚Ñì` screen is designed around the local Screening project's `investor_flow`
-dataset, not the older KRX snapshot collector.
-
-1. Apply `supabase/migrations/20260618000100_add_investor_flow_daily_tables.sql`
-2. Apply `supabase/migrations/20260618000200_add_investor_flow_ranked_function.sql`
-3. Apply `supabase/migrations/20260622000100_add_investor_flow_daily_counts_function.sql`
-4. Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`
-5. Import the local SQLite data
-
-```bash
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --dry-run
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite
-```
-
-The default command is now safe for re-runs. When no date filter is provided, it compares local SQLite dates against Supabase and uploads only missing or mismatched trade dates.
-
-If `D:/Codex/secrets/econostock-sync.env` exists, the importer will load it automatically.
-
-For a one-day retry after a partial failure:
-
-```bash
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --start-date 2026-06-19 --end-date 2026-06-19
-```
-
-For a full backfill, add the explicit safety flag:
-
-```bash
-npm run import:investor-flow -- --db D:/Codex/Screening/data/market_data.sqlite --allow-full-history
-```
-
-### Investor snapshots
-
-Legacy path for the older `investor_snapshots` / `investor-proxy` based screen:
-
-```bash
-npm run import:investor -- --file ./data/investor.csv --dry-run
-npm run import:investor -- --file ./data/investor.csv
-```
-
-### Screening results
-
-```bash
-npm run import:screening -- --file ./data/screening.csv --dry-run
-npm run import:screening -- --file ./data/screening.csv
-npm run import:screening -- --file D:/Codex/Screening/output --dry-run
-npm run import:screening -- --file D:/Codex/Screening/output
-```
-
-### Screening sync wrapper
-
-Use this when the screening engine still runs manually, but you want the import step to happen only when
-the output folder contains files newer than the last successful Supabase import.
-
-```bash
-npm run sync:screening -- --file D:/Codex/Screening/output --dry-run
-npm run sync:screening -- --file D:/Codex/Screening/output
-```
-
-Optional arguments:
-
-- `--env-file D:/Codex/secrets/econostock-sync.env`
-- `--db D:/Codex/Screening/data/market_data.sqlite`
-- `--force`
-- `--skip-price-sync`
-
-Behavior:
-
-- checks `screening_sync_status.last_success_at`
-- checks the modified time of CSV files in the output folder
-- skips import when nothing new changed
-- runs the normal `import:screening` command when a new or updated file is detected
-- automatically runs `import-screening-price-sqlite.py` after screening sync
-- when the screening files did not change, it still attempts an incremental price sync
-- this lets the previous latest run fill automatically as soon as the next trading day's prices are available in `market_data.sqlite`
-
-### One-click CMD runner
-
-For the current local setup, you can run the prepared batch file:
-
-```bat
-sync-screening-to-web.bat
-```
-
-It uses these defaults:
-
-- output folder: `D:\Codex\Screening\output`
-- SQLite DB: `D:\Codex\Screening\data\market_data.sqlite`
-- env file: `D:\Codex\secrets\econostock-sync.env`
-
-You can also pass through wrapper flags:
-
-```bat
-sync-screening-to-web.bat --dry-run
-sync-screening-to-web.bat --force
-```
-
-Supported screening import formats:
-
-- normalized `screening.csv`
-- one `daily_action_sheet_YYYY-MM-DD.csv`
-- a directory that contains multiple `daily_action_sheet_*.csv` files
-
-Required normalized screening CSV columns:
-
-- `run_key`
-- `as_of_date`
-- `strategy_key`
-- `stock_code`
-- `stock_name`
-
-Optional screening CSV columns:
-
-- `run_label`
-- `source`
-- `status`
-- `market`
-- `rank_no`
-- `score`
-- `signal`
-- `close_price`
-- `change_rate`
-- `volume`
-- `reason_summary`
-- `tags`
-- `notes`
-
-## Supabase migrations
+## Supabase setup
 
 Apply the migrations in `supabase/migrations` before using the monitoring pages.
 
-Required migrations for a fresh project:
+Commonly required migrations for a fresh project:
 
 - `supabase/migrations/20260414071416_9e5e7c6a-6d87-46b9-945a-c5e6ab5c394f.sql`
 - `supabase/migrations/20260617000200_add_naver_theme_tables.sql`
@@ -183,15 +61,7 @@ Required migrations for a fresh project:
 - `supabase/migrations/20260618000200_add_investor_flow_ranked_function.sql`
 - `supabase/migrations/20260622000100_add_investor_flow_daily_counts_function.sql`
 
-The KRX and investor screens also depend on these Edge Functions being deployed:
-
-```text
-supabase/functions/krx-proxy
-supabase/functions/pykrx-proxy
-```
-
-`supabase/functions/investor-proxy` is only needed when you still operate the legacy
-`investor_snapshots` screen.
+If you proxy KRX-style requests through Supabase Edge Functions, deploy only the frontend-facing functions that your public site actually needs.
 
 ## Build
 
@@ -227,4 +97,3 @@ Notes:
 - If `VITE_BASE_PATH` is empty, the build automatically uses `/<repository>/` on GitHub Actions.
 - If you later connect a custom domain, set `VITE_BASE_PATH` to `/`.
 - In GitHub, open `Settings -> Pages` and set `Source` to `GitHub Actions`.
-

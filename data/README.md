@@ -1,19 +1,8 @@
 # Data Templates
 
-Use these example files as starting points for manual imports.
+These example files are kept only as schema references for the public web project.
 
-- Copy `investor.example.csv` to `investor.csv` and replace the sample row with real investor snapshot data.
-- Copy `screening.example.csv` to `screening.csv` and replace the sample row with real screening output.
-- The screening importer also accepts `daily_action_sheet_YYYY-MM-DD.csv` files or a whole directory that contains them.
+- `investor.example.csv` shows a sample column layout.
+- `screening.example.csv` shows a sample screening row layout.
 
-Import commands:
-
-```cmd
-npm run import:investor -- --file .\data\investor.csv --dry-run
-npm run import:investor -- --file .\data\investor.csv
-
-npm run import:screening -- --file .\data\screening.csv --dry-run
-npm run import:screening -- --file .\data\screening.csv
-npm run import:screening -- --file D:\Codex\Screening\output --dry-run
-npm run import:screening -- --file D:\Codex\Screening\output
-```
+Actual import commands, local SQLite sync, and service-role ingestion jobs are maintained in the private operations repository.

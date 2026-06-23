@@ -23,6 +23,8 @@ __pycache__/
 *.pyc
 supabase/functions/.env
 supabase/functions/.env.*
+PRIVATE_REPO_SPLIT.local.md
+private-ops-local/
 
 # Editor directories and files
 .vscode/*
