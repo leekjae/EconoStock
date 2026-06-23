@@ -1,6 +1,17 @@
 ﻿import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, AlertTriangle, BookOpenText, CircleHelp, Database, RefreshCw, Search, TrendingUp } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  BookOpenText,
+  CircleHelp,
+  Database,
+  RefreshCw,
+  Search,
+  TrendingUp,
+} from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -253,10 +264,6 @@ function formatNumber(value: number) {
   return Number(value || 0).toLocaleString("ko-KR");
 }
 
-function formatScore(value: number) {
-  return Number(value || 0).toFixed(2);
-}
-
 function formatPercent(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return "-";
@@ -289,6 +296,33 @@ function getPerformanceStateLabel(candidate: ScreeningPerformanceRow) {
   if (candidate.performanceStatus === "entry_missing") return "진입 시가 없음";
   if (candidate.performanceStatus === "latest_missing") return "최근 거래일 종가 없음";
   return "가격 없음";
+}
+
+function getCandidateSignalKey(
+  candidate: Pick<ScreeningCandidate, "signal" | "run_key">,
+  runByKey: Map<string, ScreeningRun>,
+) {
+  return normalizeSignalKey(candidate.signal || runByKey.get(candidate.run_key)?.strategy_key || "");
+}
+
+function sortPerformanceRows(rows: ScreeningPerformanceRow[], runByKey: Map<string, ScreeningRun>) {
+  return [...rows].sort((left, right) => {
+    const leftSignal = getCandidateSignalKey(left, runByKey);
+    const rightSignal = getCandidateSignalKey(right, runByKey);
+
+    const signalCompare = getSignalOrder(leftSignal) - getSignalOrder(rightSignal);
+    if (signalCompare !== 0) {
+      return signalCompare;
+    }
+
+    const leftRank = Number(left.rank_no || Number.MAX_SAFE_INTEGER);
+    const rightRank = Number(right.rank_no || Number.MAX_SAFE_INTEGER);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.stock_name.localeCompare(right.stock_name, "ko-KR");
+  });
 }
 
 export function ScreeningMonitor() {
@@ -398,9 +432,10 @@ export function ScreeningMonitor() {
     });
   }, [runSignalFilter, runsForSelectedDate]);
 
-  const filteredRunKeys = useMemo(() => filteredRuns.map((run) => run.run_key), [filteredRuns]);
-  const referenceRun = filteredRuns[0] ?? null;
-  const runByKey = useMemo(() => new Map(filteredRuns.map((run) => [run.run_key, run] as const)), [filteredRuns]);
+  const selectedDateRunKeys = useMemo(() => runsForSelectedDate.map((run) => run.run_key), [runsForSelectedDate]);
+  const referenceRun = runsForSelectedDate[0] ?? null;
+  const selectedSignalRun = filteredRuns[0] ?? null;
+  const runByKey = useMemo(() => new Map(runsForSelectedDate.map((run) => [run.run_key, run] as const)), [runsForSelectedDate]);
   const selectedSignalLabel = runSignalFilter === "all" ? "전체" : getSignalLabel(runSignalFilter);
 
   const {
@@ -410,56 +445,101 @@ export function ScreeningMonitor() {
     refetch: refetchCandidates,
     isFetching: candidatesFetching,
   } = useQuery<ScreeningCandidate[]>({
-    queryKey: ["screening-candidates", filteredRunKeys.join(",")],
-    queryFn: () => fetchScreeningCandidates(filteredRunKeys),
-    enabled: filteredRunKeys.length > 0,
+    queryKey: ["screening-candidates", selectedDateRunKeys.join(",")],
+    queryFn: () => fetchScreeningCandidates(selectedDateRunKeys),
+    enabled: selectedDateRunKeys.length > 0,
     staleTime: 60 * 1000,
     retry: false,
   });
 
   const performance = useScreeningPerformance(referenceRun, candidates);
 
+  const displayRows = useMemo(() => {
+    const rows =
+      runSignalFilter === "all"
+        ? performance.rows
+        : performance.rows.filter((candidate) => getCandidateSignalKey(candidate, runByKey) === runSignalFilter);
+
+    return sortPerformanceRows(rows, runByKey);
+  }, [performance.rows, runByKey, runSignalFilter]);
+
   const filteredCandidates = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
 
-    return performance.rows
-      .filter((candidate) => {
-        const matchesQuery =
-          !query ||
-          candidate.stock_name.toLowerCase().includes(query) ||
-          candidate.stock_code.toLowerCase().includes(query) ||
-          (candidate.reason_summary || "").toLowerCase().includes(query) ||
-          (candidate.tags || "").toLowerCase().includes(query);
+    return displayRows.filter((candidate) => {
+      const matchesQuery =
+        !query ||
+        candidate.stock_name.toLowerCase().includes(query) ||
+        candidate.stock_code.toLowerCase().includes(query) ||
+        (candidate.reason_summary || "").toLowerCase().includes(query) ||
+        (candidate.tags || "").toLowerCase().includes(query);
 
-        return matchesQuery;
-      })
-      .sort((left, right) => {
-        const leftSignal = normalizeSignalKey(left.signal || runByKey.get(left.run_key)?.strategy_key || "");
-        const rightSignal = normalizeSignalKey(right.signal || runByKey.get(right.run_key)?.strategy_key || "");
-
-        const signalCompare = getSignalOrder(leftSignal) - getSignalOrder(rightSignal);
-        if (signalCompare !== 0) {
-          return signalCompare;
-        }
-
-        const leftRank = Number(left.rank_no || Number.MAX_SAFE_INTEGER);
-        const rightRank = Number(right.rank_no || Number.MAX_SAFE_INTEGER);
-        if (leftRank !== rightRank) {
-          return leftRank - rightRank;
-        }
-
-        return left.stock_name.localeCompare(right.stock_name, "ko-KR");
-      });
-  }, [deferredSearch, performance.rows, runByKey]);
+      return matchesQuery;
+    });
+  }, [deferredSearch, displayRows]);
 
   const screeningStats = useMemo(() => {
-    const totalScore = candidates.reduce((sum, candidate) => sum + Number(candidate.score || 0), 0);
+    const readyRows = displayRows.filter((row) => row.returnPct !== null);
+    const latestReferenceDate =
+      readyRows
+        .map((row) => row.latestTradeDate)
+        .filter((date): date is string => Boolean(date))
+        .sort((left, right) => right.localeCompare(left))[0] ?? performance.latestAvailableTradeDate ?? null;
+    const bestCandidate =
+      readyRows.length === 0
+        ? null
+        : readyRows.reduce<ScreeningPerformanceRow | null>((best, row) => {
+            if (row.maxReturnPct === null) {
+              return best;
+            }
+            if (!best || Number(row.maxReturnPct) > Number(best.maxReturnPct ?? Number.NEGATIVE_INFINITY)) {
+              return row;
+            }
+            return best;
+          }, null);
+    const worstCandidate =
+      readyRows.length === 0
+        ? null
+        : readyRows.reduce<ScreeningPerformanceRow | null>((worst, row) => {
+            if (row.maxDrawdownPct === null) {
+              return worst;
+            }
+            if (!worst || Number(row.maxDrawdownPct) < Number(worst.maxDrawdownPct ?? Number.POSITIVE_INFINITY)) {
+              return row;
+            }
+            return worst;
+          }, null);
+
     return {
-      candidateCount: candidates.length,
-      averageScore: candidates.length === 0 ? 0 : totalScore / candidates.length,
-      topScore: candidates.reduce((max, candidate) => Math.max(max, Number(candidate.score || 0)), 0),
+      candidateCount: displayRows.length,
+      monitoredCount: readyRows.length,
+      averageReturn:
+        readyRows.length === 0
+          ? null
+          : readyRows.reduce((sum, row) => sum + Number(row.returnPct || 0), 0) / readyRows.length,
+      latestReferenceDate,
+      bestCandidate,
+      worstCandidate,
     };
-  }, [candidates]);
+  }, [displayRows, performance.latestAvailableTradeDate]);
+
+  const signalSummaries = useMemo(() => {
+    return SIGNAL_ORDER.map((signal) => {
+      const signalRows = performance.rows.filter((candidate) => getCandidateSignalKey(candidate, runByKey) === signal);
+      const readyRows = signalRows.filter((row) => row.returnPct !== null);
+
+      return {
+        signal,
+        label: getSignalLabel(signal),
+        candidateCount: signalRows.length,
+        monitoredCount: readyRows.length,
+        averageReturn:
+          readyRows.length === 0
+            ? null
+            : readyRows.reduce((sum, row) => sum + Number(row.returnPct || 0), 0) / readyRows.length,
+      };
+    });
+  }, [performance.rows, runByKey]);
 
   const schemaMissing = isSchemaMissing(runsError) || isSchemaMissing(candidatesError) || isSchemaMissing(syncError);
   const isLoading = runsLoading || syncLoading || priceDatesLoading;
@@ -476,7 +556,7 @@ export function ScreeningMonitor() {
     refetchRuns();
     refetchSync();
     refetchPriceDates();
-    if (filteredRunKeys.length > 0) {
+    if (selectedDateRunKeys.length > 0) {
       refetchCandidates();
     }
     void performance.refetch();
@@ -607,12 +687,12 @@ export function ScreeningMonitor() {
         />
         <MetricCard
           title="평균 수익률"
-          value={performance.summary.monitoredCount > 0 ? formatPercent(performance.summary.averageReturn) : "-"}
+          value={screeningStats.averageReturn !== null ? formatPercent(screeningStats.averageReturn) : "-"}
           note={
             !selectedDateHasScreening && selectedDateHasPrice
               ? "스크리닝 미실행일이라 성과 계산 대상이 없습니다"
-              : performance.summary.monitoredCount > 0
-              ? `${formatNumber(performance.summary.monitoredCount)}개 종목이 성과 계산에 반영되었습니다`
+              : screeningStats.monitoredCount > 0
+                ? `${formatNumber(screeningStats.monitoredCount)}개 종목이 성과 계산에 반영되었습니다`
               : "아직 성과 계산에 반영된 가격이 없습니다"
           }
           loading={performance.isLoading}
@@ -620,11 +700,92 @@ export function ScreeningMonitor() {
         />
         <MetricCard
           title="최근 반영 거래일"
-          value={formatDateLabel(performance.summary.latestReferenceDate || performance.latestAvailableTradeDate)}
-          note={`최고가 수익률 ${formatPercent(performance.summary.bestReturn)} / 최저가 수익률 ${formatPercent(performance.summary.worstDrawdown)}`}
+          value={formatDateLabel(screeningStats.latestReferenceDate || performance.latestAvailableTradeDate)}
+          note={
+            screeningStats.monitoredCount > 0
+              ? `${formatNumber(screeningStats.monitoredCount)}개 종목의 최근 종가가 반영되었습니다`
+              : "최근 종가가 아직 성과표에 반영되지 않았습니다"
+          }
           loading={performance.isLoading}
           icon={<BookOpenText className="h-4 w-4" />}
         />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr),minmax(320px,1fr)]">
+        <Card className="shadow-none">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">라벨별 요약</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {signalSummaries.map((summary) => (
+                <LabelSummaryCard
+                  key={summary.signal}
+                  title={summary.label}
+                  value={summary.candidateCount > 0 ? `후보 ${formatNumber(summary.candidateCount)}개` : "후보 없음"}
+                  note={
+                    summary.candidateCount === 0
+                      ? "수익률 없음"
+                      : summary.averageReturn !== null
+                        ? formatPercent(summary.averageReturn)
+                        : "성과 반영 대기"
+                  }
+                  noteTone={
+                    summary.averageReturn === null
+                      ? "muted"
+                      : summary.averageReturn > 0
+                        ? "up"
+                        : summary.averageReturn < 0
+                          ? "down"
+                          : "neutral"
+                  }
+                  active={runSignalFilter === summary.signal}
+                  loading={candidatesLoading || performance.isLoading}
+                />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="flex flex-col shadow-none">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">최고/최저 수익률</CardTitle>
+          </CardHeader>
+          <CardContent className="grid flex-1 gap-2 min-h-0 md:grid-cols-2 xl:grid-cols-1 xl:grid-rows-2">
+            <ExtremeMetricCard
+              title="최고가 수익률"
+              value={
+                screeningStats.bestCandidate?.maxReturnPct !== null && screeningStats.bestCandidate?.maxReturnPct !== undefined
+                  ? formatPercent(screeningStats.bestCandidate.maxReturnPct)
+                  : "-"
+              }
+              note={
+                screeningStats.bestCandidate
+                  ? `${getSignalLabel(getCandidateSignalKey(screeningStats.bestCandidate, runByKey))} · ${screeningStats.bestCandidate.stock_name}`
+                  : "아직 최고가 수익률을 계산할 종목이 없습니다"
+              }
+              tone="up"
+              loading={performance.isLoading}
+              icon={<ArrowUpRight className="h-4 w-4" />}
+            />
+            <ExtremeMetricCard
+              title="최저가 수익률"
+              value={
+                screeningStats.worstCandidate?.maxDrawdownPct !== null && screeningStats.worstCandidate?.maxDrawdownPct !== undefined
+                  ? formatPercent(screeningStats.worstCandidate.maxDrawdownPct)
+                  : "-"
+              }
+              note={
+                screeningStats.worstCandidate
+                  ? `${getSignalLabel(getCandidateSignalKey(screeningStats.worstCandidate, runByKey))} · ${screeningStats.worstCandidate.stock_name}`
+                  : "아직 최저가 수익률을 계산할 종목이 없습니다"
+              }
+              tone="down"
+              loading={performance.isLoading}
+              icon={<ArrowDownRight className="h-4 w-4" />}
+            />
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="shadow-none">
@@ -683,13 +844,13 @@ export function ScreeningMonitor() {
             </label>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr),320px]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,2fr),minmax(320px,1fr)]">
             <div className="rounded-2xl border bg-muted/30 p-4 text-sm text-muted-foreground">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-medium text-foreground">현재 선택</p>
                 {runSignalFilter === "all" ? <Badge variant="outline">전체</Badge> : <SignalGuideBadge signal={runSignalFilter} />}
-                {runSignalFilter !== "all" && referenceRun ? (
-                  <Badge variant={getStatusVariant(referenceRun.status)}>{referenceRun.status}</Badge>
+                {runSignalFilter !== "all" && selectedSignalRun ? (
+                  <Badge variant={getStatusVariant(selectedSignalRun.status)}>{selectedSignalRun.status}</Badge>
                 ) : null}
                 {!selectedDateHasScreening && selectedDateHasPrice ? <Badge variant="secondary">스크리닝 미실행</Badge> : null}
               </div>
@@ -698,21 +859,14 @@ export function ScreeningMonitor() {
                   <p className="mt-2 text-foreground">{runSignalFilter === "all" ? "전체 라벨 종목" : selectedSignalLabel}</p>
                   <p className="mt-1">{selectedRunTiming}</p>
                   <p className="mt-2">
-                    후보 {formatNumber(screeningStats.candidateCount)}개, 평균 점수 {formatScore(screeningStats.averageScore)}, 최고 점수 {formatScore(screeningStats.topScore)}
+                    후보 {formatNumber(screeningStats.candidateCount)}개, 성과 반영 {formatNumber(screeningStats.monitoredCount)}개
                   </p>
                   {selectedRunGuide ? (
                     <>
                       <p className="mt-2">{selectedRunGuide.summary}</p>
                       <p className="mt-1">{selectedRunGuide.horizon}</p>
                     </>
-                  ) : (
-                    <>
-                      <p className="mt-2">
-                        전체 라벨을 선택하면 종목은 <code className="font-mono text-xs">strategy_a → strategy_b → cash → overlap → spike → rebound</code> 순서로 먼저 정렬됩니다.
-                      </p>
-                      <p className="mt-1">같은 라벨 안에서는 순위가 높은 종목부터 표시됩니다.</p>
-                    </>
-                  )}
+                  ) : null}
                 </>
               ) : selectedDateHasPrice ? (
                 <>
@@ -753,9 +907,9 @@ export function ScreeningMonitor() {
                     : "상단 필터에서 기준일을 선택하면 후보 종목의 성과를 볼 수 있습니다."}
               </CardDescription>
             </div>
-            {runSignalFilter !== "all" && referenceRun?.notes ? (
+            {runSignalFilter !== "all" && selectedSignalRun?.notes ? (
               <div className="max-w-sm rounded-2xl bg-muted px-3 py-2 text-xs text-muted-foreground">
-                {referenceRun.notes}
+                {selectedSignalRun.notes}
               </div>
             ) : null}
           </div>
@@ -1009,6 +1163,72 @@ function MetricCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function LabelSummaryCard({
+  title,
+  value,
+  note,
+  noteTone,
+  active,
+  loading,
+}: {
+  title: string;
+  value: string;
+  note: string;
+  noteTone: "up" | "down" | "neutral" | "muted";
+  active?: boolean;
+  loading: boolean;
+}) {
+  const noteClassName =
+    noteTone === "up"
+      ? "text-up"
+      : noteTone === "down"
+        ? "text-down"
+        : noteTone === "neutral"
+          ? "text-foreground"
+          : "text-muted-foreground";
+
+  return (
+    <div className={`rounded-2xl border p-3 ${active ? "border-primary/40 bg-primary/5" : "bg-background"}`}>
+      <p className="text-xs font-medium text-foreground">{title}</p>
+      {loading ? <Skeleton className="mt-2 h-5 w-24" /> : <p className="mt-2 text-base font-semibold text-foreground">{value}</p>}
+      <p className={`mt-1 text-base font-semibold leading-tight ${noteClassName}`}>{note}</p>
+    </div>
+  );
+}
+
+function ExtremeMetricCard({
+  title,
+  value,
+  note,
+  tone,
+  loading,
+  icon,
+}: {
+  title: string;
+  value: string;
+  note: string;
+  tone: "up" | "down";
+  loading: boolean;
+  icon: ReactNode;
+}) {
+  return (
+    <div className={`rounded-2xl border p-3 ${tone === "up" ? "bg-up-subtle/40" : "bg-down-subtle/30"}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-foreground">{title}</p>
+          {loading ? (
+            <Skeleton className="h-5 w-24" />
+          ) : (
+            <p className={`text-lg font-semibold ${tone === "up" ? "text-up" : "text-down"}`}>{value}</p>
+          )}
+          <p className="text-sm leading-tight text-muted-foreground">{note}</p>
+        </div>
+        <div className="rounded-2xl bg-background/80 p-1.5 text-muted-foreground">{icon}</div>
+      </div>
+    </div>
   );
 }
 
