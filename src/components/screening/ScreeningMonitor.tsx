@@ -1,6 +1,6 @@
 ﻿import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, AlertTriangle, BookOpenText, CircleHelp, Database, RefreshCw, Search, TrendingUp } from "lucide-react";
+import { Activity, AlertTriangle, BookOpenText, CalendarDays, CircleHelp, Database, RefreshCw, Search, TrendingUp } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -20,6 +20,8 @@ import {
 } from "@/lib/screeningArchive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
@@ -195,6 +197,19 @@ async function fetchScreeningPriceDates() {
   }
 
   return rows;
+}
+
+function dateFromCompact(value: string | null | undefined) {
+  if (!value || !/^\d{8}$/.test(value)) return undefined;
+  return new Date(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8)));
+}
+
+function compactFromDate(value: Date | undefined) {
+  if (!value) return null;
+  const year = String(value.getFullYear());
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
 }
 
 function formatDateLabel(ymd: string | null | undefined) {
@@ -399,12 +414,15 @@ export function ScreeningMonitor() {
   }, [priceDates, priceDatesError]);
 
   const runDateOptions = useMemo(() => {
+    // Only dates that actually have a screening run (Supabase + archive).
+    // Price-only dates are intentionally excluded so the picker never shows
+    // confusing "스크리닝 미실행" dates (e.g. research backfill before the start).
     const runDates = orderedRuns.map((run) => run.as_of_date);
     const archiveDates = archiveManifest?.archive_dates ?? [];
-    return Array.from(new Set([...runDates, ...priceDateOptions, ...archiveDates])).sort((left, right) =>
-      right.localeCompare(left)
-    );
-  }, [orderedRuns, priceDateOptions, archiveManifest]);
+    return Array.from(new Set([...runDates, ...archiveDates])).sort((left, right) => right.localeCompare(left));
+  }, [orderedRuns, archiveManifest]);
+
+  const availableDateSet = useMemo(() => new Set(runDateOptions), [runDateOptions]);
 
   const archiveRunsForDate = useMemo(
     () =>
@@ -723,20 +741,33 @@ export function ScreeningMonitor() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2 xl:max-w-[380px]">
-            <label className="space-y-2 text-sm">
+            <div className="space-y-2 text-sm">
               <span className="font-medium text-foreground">기준일</span>
-              <select
-                value={runDateFilter}
-                onChange={(event) => setRunDateFilter(event.target.value)}
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                {runDateOptions.map((date) => (
-                  <option key={date} value={date}>
-                    {formatDateLabel(date)}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="h-10 w-full justify-start gap-2 text-left text-sm font-normal">
+                    <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                    <span>{runDateFilter ? formatDateLabel(runDateFilter) : "날짜 선택"}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateFromCompact(runDateFilter)}
+                    defaultMonth={dateFromCompact(runDateFilter) ?? dateFromCompact(runDateOptions[0]) ?? new Date()}
+                    onSelect={(date) => {
+                      const compact = compactFromDate(date);
+                      if (compact) {
+                        setRunDateFilter(compact);
+                      }
+                    }}
+                    disabled={(date) => !availableDateSet.has(compactFromDate(date) ?? "")}
+                    initialFocus
+                    className="pointer-events-auto p-3"
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
 
             <label className="space-y-2 text-sm">
               <span className="font-medium text-foreground">라벨</span>
