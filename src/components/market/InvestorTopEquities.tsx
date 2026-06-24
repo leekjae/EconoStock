@@ -6,7 +6,6 @@ import { AlertTriangle, ArrowDown, ArrowDownUp, ArrowUp, CalendarDays, Database,
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,17 +42,6 @@ interface InvestorTopEquitiesProps {
   initialStartDate?: Date;
   initialEndDate?: Date;
 }
-
-const SORT_OPTIONS: Array<{ value: InvestorType; label: string }> = [
-  { value: "foreign", label: "외국인" },
-  { value: "institution", label: "기관" },
-  { value: "individual", label: "개인" },
-];
-
-const DIRECTION_OPTIONS: Array<{ value: DirectionType; label: string }> = [
-  { value: "buy", label: "순매수 상위" },
-  { value: "sell", label: "순매도 상위" },
-];
 
 const MARKET_OPTIONS: Array<{ value: MarketType; label: string }> = [
   { value: "ALL", label: "전체" },
@@ -365,9 +353,9 @@ export function InvestorTopEquities({ initialStartDate, initialEndDate }: Invest
   if (!isLoading && !overallMaxTradeDate) return <Card className="border-dashed shadow-none"><CardHeader><CardTitle className="text-xl">아직 적재된 투자자 데이터가 없습니다</CardTitle><CardDescription>최근 250거래일은 Supabase, 그 이전은 GitHub 아카이브에서 읽는 구조입니다.</CardDescription></CardHeader></Card>;
 
   return (
-    <div className="space-y-6 overflow-auto p-4">
+    <div className="h-full space-y-6 overflow-auto p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div><h2 className="text-2xl font-semibold tracking-tight">주체별 누적 순매수</h2><p className="text-sm text-muted-foreground">최근 250거래일은 Supabase, 이전 데이터는 GitHub 아카이브에서 자동으로 이어서 조회합니다.</p></div>
+        <div><h2 className="text-2xl font-semibold tracking-tight">주요 투자자별 누적 순매수</h2></div>
         <Button variant="outline" size="sm" onClick={() => { overviewQuery.refetch(); tradeDatesQuery.refetch(); syncStatusQuery.refetch(); leadersQuery.refetch(); }} disabled={leadersQuery.isFetching}><RefreshCw className={cn("mr-2 h-4 w-4", leadersQuery.isFetching && "animate-spin")} />데이터 새로고침</Button>
       </div>
 
@@ -389,7 +377,6 @@ export function InvestorTopEquities({ initialStartDate, initialEndDate }: Invest
         </CardContent>
       </Card>
       <Card className="shadow-none">
-        <CardHeader className="pb-4"><div className="flex flex-wrap items-center gap-2"><Badge variant="secondary">{SORT_OPTIONS.find((option) => option.value === sortBy)?.label ?? sortBy}</Badge><Badge variant="outline">{DIRECTION_OPTIONS.find((option) => option.value === direction)?.label ?? direction}</Badge><Badge variant="outline">{getRangeModeLabel(rangeMode)}</Badge></div><CardDescription>각 주체 컬럼을 누르면 정렬 주체를 바꾸거나 순매수/순매도를 토글할 수 있습니다.</CardDescription></CardHeader>
         <CardContent>
           {leadersQuery.isLoading ? <div className="space-y-3">{Array.from({ length: 5 }).map((_, index) => <Skeleton key={index} className="h-12 w-full rounded-xl" />)}</div> : leadersQuery.error ? <div className="rounded-2xl border border-dashed py-12 text-center text-sm text-muted-foreground">{getErrorMessage(leadersQuery.error)}</div> : leaders.length === 0 ? <div className="rounded-2xl border border-dashed py-12 text-center text-sm text-muted-foreground">선택한 조건에 맞는 종목이 없습니다.</div> : <div className="overflow-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-16">순위</TableHead><TableHead className="min-w-[220px]">종목</TableHead><TableHead className="w-24">시장</TableHead><TableHead className="w-28 text-right">최근 거래일 종가</TableHead><TableHead className="w-40 text-right"><SortHeader label="개인" active={sortBy === "individual"} direction={direction} onClick={() => sortBy === "individual" ? setDirection(direction === "buy" ? "sell" : "buy") : setSortBy("individual")} /></TableHead><TableHead className="w-40 text-right"><SortHeader label="외국인" active={sortBy === "foreign"} direction={direction} onClick={() => sortBy === "foreign" ? setDirection(direction === "buy" ? "sell" : "buy") : setSortBy("foreign")} /></TableHead><TableHead className="w-40 text-right"><SortHeader label="기관" active={sortBy === "institution"} direction={direction} onClick={() => sortBy === "institution" ? setDirection(direction === "buy" ? "sell" : "buy") : setSortBy("institution")} /></TableHead><TableHead className="w-24 text-right">집계일수</TableHead></TableRow></TableHeader><TableBody>{leaders.map((row, index) => <TableRow key={row.stock_code + "-" + row.latest_trade_date}><TableCell className="font-medium">{index + 1}</TableCell><TableCell><button type="button" onClick={() => setDetailTarget(row)} className="text-left transition-colors hover:text-primary"><p className="font-medium">{row.stock_name || row.stock_code}</p><p className="text-xs text-muted-foreground">{row.stock_code}</p></button></TableCell><TableCell>{row.market || "-"}</TableCell><TableCell className="text-right font-medium">{formatPrice(row.latest_close_price)}</TableCell><TableCell className="text-right"><InvestorValueCell periodValue={row.individual_period_net} dailyValue={row.individual_daily_net} highlight={sortBy === "individual"} /></TableCell><TableCell className="text-right"><InvestorValueCell periodValue={row.foreign_period_net} dailyValue={row.foreign_daily_net} highlight={sortBy === "foreign"} /></TableCell><TableCell className="text-right"><InvestorValueCell periodValue={row.institution_period_net} dailyValue={row.institution_daily_net} highlight={sortBy === "institution"} /></TableCell><TableCell className="text-right">{row.days_count.toLocaleString("ko-KR")}</TableCell></TableRow>)}</TableBody></Table></div>}
         </CardContent>

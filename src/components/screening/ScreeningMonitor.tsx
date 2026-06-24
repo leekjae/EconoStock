@@ -552,6 +552,53 @@ export function ScreeningMonitor() {
     };
   }, [perf.rows]);
 
+  const labelSummary = useMemo(() => {
+    const stats = new Map<string, { count: number; retSum: number; retCount: number }>();
+    for (const row of perf.rows) {
+      const key = normalizeSignalKey(row.signal || runByKey.get(row.run_key)?.strategy_key || "");
+      const entry = stats.get(key) ?? { count: 0, retSum: 0, retCount: 0 };
+      entry.count += 1;
+      if (row.returnPct !== null && row.returnPct !== undefined) {
+        entry.retSum += Number(row.returnPct);
+        entry.retCount += 1;
+      }
+      stats.set(key, entry);
+    }
+    // include labels that exist for the date even if they have no candidates (e.g. cash)
+    for (const run of runsForSelectedDate) {
+      const key = normalizeSignalKey(run.strategy_key);
+      if (!stats.has(key)) {
+        stats.set(key, { count: 0, retSum: 0, retCount: 0 });
+      }
+    }
+    return Array.from(stats.entries())
+      .sort((left, right) => getSignalOrder(left[0]) - getSignalOrder(right[0]))
+      .map(([key, entry]) => ({
+        key,
+        label: getSignalLabel(key),
+        count: entry.count,
+        avgReturn: entry.retCount > 0 ? entry.retSum / entry.retCount : null,
+      }));
+  }, [perf.rows, runsForSelectedDate, runByKey]);
+
+  const bestReturnRow = useMemo(
+    () =>
+      perf.rows.reduce<ScreeningPerformanceRow | null>((best, row) => {
+        if (row.maxReturnPct === null || row.maxReturnPct === undefined) return best;
+        return best === null || Number(row.maxReturnPct) > Number(best.maxReturnPct) ? row : best;
+      }, null),
+    [perf.rows]
+  );
+
+  const worstReturnRow = useMemo(
+    () =>
+      perf.rows.reduce<ScreeningPerformanceRow | null>((worst, row) => {
+        if (row.maxDrawdownPct === null || row.maxDrawdownPct === undefined) return worst;
+        return worst === null || Number(row.maxDrawdownPct) < Number(worst.maxDrawdownPct) ? row : worst;
+      }, null),
+    [perf.rows]
+  );
+
   const schemaMissing = isSchemaMissing(runsError) || isSchemaMissing(candidatesError) || isSchemaMissing(syncError);
   const isLoading = runsLoading || syncLoading || priceDatesLoading;
   const isRefreshing =
@@ -712,11 +759,87 @@ export function ScreeningMonitor() {
         <MetricCard
           title="최근 반영 거래일"
           value={formatDateLabel(perf.summary.latestReferenceDate || perf.latestAvailableTradeDate)}
-          note={`최고가 수익률 ${formatPercent(perf.summary.bestReturn)} / 최저가 수익률 ${formatPercent(perf.summary.worstDrawdown)}`}
+          note={
+            perf.summary.monitoredCount > 0
+              ? `${formatNumber(perf.summary.monitoredCount)}개 종목 성과 반영`
+              : "다음 거래일 시가 기준 추적"
+          }
           loading={perf.isLoading}
           icon={<BookOpenText className="h-4 w-4" />}
         />
       </div>
+
+      {selectedDateHasScreening ? (
+        <Card className="shadow-none">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">라벨별 성과</CardTitle>
+            <CardDescription>라벨별 후보 수·평균 수익률과, 최고가·최저가 수익률 종목입니다.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border bg-up-subtle p-4">
+                <p className="text-xs text-muted-foreground">최고가 수익률 종목</p>
+                {bestReturnRow ? (
+                  <>
+                    <p className="mt-1 text-2xl font-semibold text-up">{formatPercent(bestReturnRow.maxReturnPct)}</p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {bestReturnRow.stock_name}{" "}
+                      <span className="text-xs text-muted-foreground">{bestReturnRow.stock_code}</span>
+                    </p>
+                    <div className="mt-1">
+                      <SignalGuideBadge signal={bestReturnRow.signal || runByKey.get(bestReturnRow.run_key)?.strategy_key || ""} />
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm text-muted-foreground">표시할 종목이 없습니다.</p>
+                )}
+              </div>
+              <div className="rounded-2xl border bg-down-subtle p-4">
+                <p className="text-xs text-muted-foreground">최저가 수익률 종목</p>
+                {worstReturnRow ? (
+                  <>
+                    <p className="mt-1 text-2xl font-semibold text-down">{formatPercent(worstReturnRow.maxDrawdownPct)}</p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {worstReturnRow.stock_name}{" "}
+                      <span className="text-xs text-muted-foreground">{worstReturnRow.stock_code}</span>
+                    </p>
+                    <div className="mt-1">
+                      <SignalGuideBadge signal={worstReturnRow.signal || runByKey.get(worstReturnRow.run_key)?.strategy_key || ""} />
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm text-muted-foreground">표시할 종목이 없습니다.</p>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              {labelSummary.map((item) => (
+                <div key={item.key} className="rounded-2xl border bg-muted/30 p-3">
+                  <p className="text-sm font-medium text-foreground">{item.label}</p>
+                  {item.count > 0 ? (
+                    <>
+                      <p className="mt-1 text-xs text-muted-foreground">후보 {formatNumber(item.count)}개</p>
+                      <p
+                        className={`mt-0.5 text-sm font-semibold ${
+                          item.avgReturn !== null && item.avgReturn > 0
+                            ? "text-up"
+                            : item.avgReturn !== null && item.avgReturn < 0
+                              ? "text-down"
+                              : "text-muted-foreground"
+                        }`}
+                      >
+                        평균 {item.avgReturn !== null ? formatPercent(item.avgReturn) : "-"}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">없음</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="shadow-none">
         <CardHeader>
@@ -787,8 +910,8 @@ export function ScreeningMonitor() {
             </label>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr),320px]">
-            <div className="rounded-2xl border bg-muted/30 p-4 text-sm text-muted-foreground">
+          <div className="grid gap-4 lg:grid-cols-4">
+            <div className="rounded-2xl border bg-muted/30 p-4 text-sm text-muted-foreground lg:col-span-3">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-medium text-foreground">현재 선택</p>
                 {runSignalFilter === "all" ? <Badge variant="outline">전체</Badge> : <SignalGuideBadge signal={runSignalFilter} />}
@@ -809,14 +932,7 @@ export function ScreeningMonitor() {
                       <p className="mt-2">{selectedRunGuide.summary}</p>
                       <p className="mt-1">{selectedRunGuide.horizon}</p>
                     </>
-                  ) : (
-                    <>
-                      <p className="mt-2">
-                        전체 라벨을 선택하면 종목은 <code className="font-mono text-xs">strategy_a → strategy_b → cash → overlap → spike → rebound</code> 순서로 먼저 정렬됩니다.
-                      </p>
-                      <p className="mt-1">같은 라벨 안에서는 순위가 높은 종목부터 표시됩니다.</p>
-                    </>
-                  )}
+                  ) : null}
                 </>
               ) : selectedDateHasPrice ? (
                 <>
