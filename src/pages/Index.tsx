@@ -100,7 +100,7 @@ const Index = () => {
           ) : null}
 
           {selectedMenu.category === "investor" ? (
-            <div className="h-full overflow-auto">
+            <div className="h-full overflow-hidden">
               <InvestorTopEquities initialStartDate={initialDate} initialEndDate={initialDate} />
             </div>
           ) : null}

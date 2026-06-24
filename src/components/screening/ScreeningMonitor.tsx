@@ -1,17 +1,6 @@
 ﻿import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  Activity,
-  AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  BookOpenText,
-  CircleHelp,
-  Database,
-  RefreshCw,
-  Search,
-  TrendingUp,
-} from "lucide-react";
+import { Activity, AlertTriangle, BookOpenText, CircleHelp, Database, RefreshCw, Search, TrendingUp } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -20,6 +9,15 @@ import {
   type ScreeningPerformancePoint,
   type ScreeningPerformanceRow,
 } from "@/components/screening/useScreeningPerformance";
+import {
+  buildArchiveSummary,
+  fetchScreeningManifest,
+  fetchScreeningMonthFile,
+  findMonthMetaForDate,
+  getArchiveRowsForDate,
+  getArchiveRunsForDate,
+  isArchiveOnlyDate,
+} from "@/lib/screeningArchive";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -264,6 +262,10 @@ function formatNumber(value: number) {
   return Number(value || 0).toLocaleString("ko-KR");
 }
 
+function formatScore(value: number) {
+  return Number(value || 0).toFixed(2);
+}
+
 function formatPercent(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return "-";
@@ -296,33 +298,6 @@ function getPerformanceStateLabel(candidate: ScreeningPerformanceRow) {
   if (candidate.performanceStatus === "entry_missing") return "진입 시가 없음";
   if (candidate.performanceStatus === "latest_missing") return "최근 거래일 종가 없음";
   return "가격 없음";
-}
-
-function getCandidateSignalKey(
-  candidate: Pick<ScreeningCandidate, "signal" | "run_key">,
-  runByKey: Map<string, ScreeningRun>,
-) {
-  return normalizeSignalKey(candidate.signal || runByKey.get(candidate.run_key)?.strategy_key || "");
-}
-
-function sortPerformanceRows(rows: ScreeningPerformanceRow[], runByKey: Map<string, ScreeningRun>) {
-  return [...rows].sort((left, right) => {
-    const leftSignal = getCandidateSignalKey(left, runByKey);
-    const rightSignal = getCandidateSignalKey(right, runByKey);
-
-    const signalCompare = getSignalOrder(leftSignal) - getSignalOrder(rightSignal);
-    if (signalCompare !== 0) {
-      return signalCompare;
-    }
-
-    const leftRank = Number(left.rank_no || Number.MAX_SAFE_INTEGER);
-    const rightRank = Number(right.rank_no || Number.MAX_SAFE_INTEGER);
-    if (leftRank !== rightRank) {
-      return leftRank - rightRank;
-    }
-
-    return left.stock_name.localeCompare(right.stock_name, "ko-KR");
-  });
 }
 
 export function ScreeningMonitor() {
@@ -370,6 +345,30 @@ export function ScreeningMonitor() {
     retry: false,
   });
 
+  const { data: archiveManifest } = useQuery({
+    queryKey: ["screening-archive-manifest"],
+    queryFn: fetchScreeningManifest,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  const archiveActive = isArchiveOnlyDate(archiveManifest, runDateFilter);
+  const archiveMonthMeta =
+    archiveActive && archiveManifest ? findMonthMetaForDate(archiveManifest, runDateFilter) : null;
+
+  const {
+    data: archiveMonth,
+    error: archiveError,
+    isLoading: archiveMonthLoading,
+    isFetching: archiveMonthFetching,
+  } = useQuery({
+    queryKey: ["screening-archive-month", archiveMonthMeta?.month ?? ""],
+    queryFn: () => fetchScreeningMonthFile(archiveMonthMeta!),
+    enabled: !!archiveMonthMeta,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
   const orderedRuns = useMemo(() => {
     return [...runs].sort((left, right) => {
       const dateCompare = right.as_of_date.localeCompare(left.as_of_date);
@@ -401,12 +400,24 @@ export function ScreeningMonitor() {
 
   const runDateOptions = useMemo(() => {
     const runDates = orderedRuns.map((run) => run.as_of_date);
-    return Array.from(new Set([...runDates, ...priceDateOptions])).sort((left, right) => right.localeCompare(left));
-  }, [orderedRuns, priceDateOptions]);
+    const archiveDates = archiveManifest?.archive_dates ?? [];
+    return Array.from(new Set([...runDates, ...priceDateOptions, ...archiveDates])).sort((left, right) =>
+      right.localeCompare(left)
+    );
+  }, [orderedRuns, priceDateOptions, archiveManifest]);
+
+  const archiveRunsForDate = useMemo(
+    () =>
+      archiveActive && archiveMonth && runDateFilter ? getArchiveRunsForDate(archiveMonth, runDateFilter) : [],
+    [archiveActive, archiveMonth, runDateFilter]
+  );
 
   const runsForSelectedDate = useMemo(() => {
+    if (archiveActive) {
+      return archiveRunsForDate;
+    }
     return orderedRuns.filter((run) => !runDateFilter || run.as_of_date === runDateFilter);
-  }, [orderedRuns, runDateFilter]);
+  }, [archiveActive, archiveRunsForDate, orderedRuns, runDateFilter]);
 
   const runSignalOptions = useMemo(() => {
     const values = Array.from(new Set(runsForSelectedDate.map((run) => normalizeSignalKey(run.strategy_key)).filter(Boolean)));
@@ -432,10 +443,9 @@ export function ScreeningMonitor() {
     });
   }, [runSignalFilter, runsForSelectedDate]);
 
-  const selectedDateRunKeys = useMemo(() => runsForSelectedDate.map((run) => run.run_key), [runsForSelectedDate]);
-  const referenceRun = runsForSelectedDate[0] ?? null;
-  const selectedSignalRun = filteredRuns[0] ?? null;
-  const runByKey = useMemo(() => new Map(runsForSelectedDate.map((run) => [run.run_key, run] as const)), [runsForSelectedDate]);
+  const filteredRunKeys = useMemo(() => filteredRuns.map((run) => run.run_key), [filteredRuns]);
+  const referenceRun = filteredRuns[0] ?? null;
+  const runByKey = useMemo(() => new Map(filteredRuns.map((run) => [run.run_key, run] as const)), [filteredRuns]);
   const selectedSignalLabel = runSignalFilter === "all" ? "전체" : getSignalLabel(runSignalFilter);
 
   const {
@@ -445,106 +455,89 @@ export function ScreeningMonitor() {
     refetch: refetchCandidates,
     isFetching: candidatesFetching,
   } = useQuery<ScreeningCandidate[]>({
-    queryKey: ["screening-candidates", selectedDateRunKeys.join(",")],
-    queryFn: () => fetchScreeningCandidates(selectedDateRunKeys),
-    enabled: selectedDateRunKeys.length > 0,
+    queryKey: ["screening-candidates", filteredRunKeys.join(",")],
+    queryFn: () => fetchScreeningCandidates(filteredRunKeys),
+    enabled: filteredRunKeys.length > 0 && !archiveActive,
     staleTime: 60 * 1000,
     retry: false,
   });
 
-  const performance = useScreeningPerformance(referenceRun, candidates);
+  const performanceHot = useScreeningPerformance(referenceRun, candidates);
 
-  const displayRows = useMemo(() => {
-    const rows =
-      runSignalFilter === "all"
-        ? performance.rows
-        : performance.rows.filter((candidate) => getCandidateSignalKey(candidate, runByKey) === runSignalFilter);
+  const archiveRows = useMemo(() => {
+    if (!archiveActive || !archiveMonth || !runDateFilter) {
+      return [] as ScreeningPerformanceRow[];
+    }
+    const keys = new Set(filteredRunKeys);
+    return getArchiveRowsForDate(archiveMonth, runDateFilter).filter(
+      (row) => keys.size === 0 || keys.has(row.run_key)
+    );
+  }, [archiveActive, archiveMonth, runDateFilter, filteredRunKeys]);
 
-    return sortPerformanceRows(rows, runByKey);
-  }, [performance.rows, runByKey, runSignalFilter]);
+  const perf = useMemo(() => {
+    if (archiveActive) {
+      const summary = buildArchiveSummary(archiveRows);
+      return {
+        latestAvailableTradeDate: summary.latestReferenceDate,
+        rows: archiveRows,
+        summary,
+        isLoading: archiveMonthLoading,
+        isFetching: archiveMonthFetching,
+        isLatestDateFetching: false,
+        error: archiveError as unknown,
+        refetch: async () => {},
+      };
+    }
+    return performanceHot;
+  }, [archiveActive, archiveRows, archiveMonthLoading, archiveMonthFetching, archiveError, performanceHot]);
 
   const filteredCandidates = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
 
-    return displayRows.filter((candidate) => {
-      const matchesQuery =
-        !query ||
-        candidate.stock_name.toLowerCase().includes(query) ||
-        candidate.stock_code.toLowerCase().includes(query) ||
-        (candidate.reason_summary || "").toLowerCase().includes(query) ||
-        (candidate.tags || "").toLowerCase().includes(query);
+    return perf.rows
+      .filter((candidate) => {
+        const matchesQuery =
+          !query ||
+          candidate.stock_name.toLowerCase().includes(query) ||
+          candidate.stock_code.toLowerCase().includes(query) ||
+          (candidate.reason_summary || "").toLowerCase().includes(query) ||
+          (candidate.tags || "").toLowerCase().includes(query);
 
-      return matchesQuery;
-    });
-  }, [deferredSearch, displayRows]);
+        return matchesQuery;
+      })
+      .sort((left, right) => {
+        const leftSignal = normalizeSignalKey(left.signal || runByKey.get(left.run_key)?.strategy_key || "");
+        const rightSignal = normalizeSignalKey(right.signal || runByKey.get(right.run_key)?.strategy_key || "");
+
+        const signalCompare = getSignalOrder(leftSignal) - getSignalOrder(rightSignal);
+        if (signalCompare !== 0) {
+          return signalCompare;
+        }
+
+        const leftRank = Number(left.rank_no || Number.MAX_SAFE_INTEGER);
+        const rightRank = Number(right.rank_no || Number.MAX_SAFE_INTEGER);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+
+        return left.stock_name.localeCompare(right.stock_name, "ko-KR");
+      });
+  }, [deferredSearch, perf.rows, runByKey]);
 
   const screeningStats = useMemo(() => {
-    const readyRows = displayRows.filter((row) => row.returnPct !== null);
-    const latestReferenceDate =
-      readyRows
-        .map((row) => row.latestTradeDate)
-        .filter((date): date is string => Boolean(date))
-        .sort((left, right) => right.localeCompare(left))[0] ?? performance.latestAvailableTradeDate ?? null;
-    const bestCandidate =
-      readyRows.length === 0
-        ? null
-        : readyRows.reduce<ScreeningPerformanceRow | null>((best, row) => {
-            if (row.maxReturnPct === null) {
-              return best;
-            }
-            if (!best || Number(row.maxReturnPct) > Number(best.maxReturnPct ?? Number.NEGATIVE_INFINITY)) {
-              return row;
-            }
-            return best;
-          }, null);
-    const worstCandidate =
-      readyRows.length === 0
-        ? null
-        : readyRows.reduce<ScreeningPerformanceRow | null>((worst, row) => {
-            if (row.maxDrawdownPct === null) {
-              return worst;
-            }
-            if (!worst || Number(row.maxDrawdownPct) < Number(worst.maxDrawdownPct ?? Number.POSITIVE_INFINITY)) {
-              return row;
-            }
-            return worst;
-          }, null);
-
+    const rows = perf.rows;
+    const totalScore = rows.reduce((sum, candidate) => sum + Number(candidate.score || 0), 0);
     return {
-      candidateCount: displayRows.length,
-      monitoredCount: readyRows.length,
-      averageReturn:
-        readyRows.length === 0
-          ? null
-          : readyRows.reduce((sum, row) => sum + Number(row.returnPct || 0), 0) / readyRows.length,
-      latestReferenceDate,
-      bestCandidate,
-      worstCandidate,
+      candidateCount: rows.length,
+      averageScore: rows.length === 0 ? 0 : totalScore / rows.length,
+      topScore: rows.reduce((max, candidate) => Math.max(max, Number(candidate.score || 0)), 0),
     };
-  }, [displayRows, performance.latestAvailableTradeDate]);
-
-  const signalSummaries = useMemo(() => {
-    return SIGNAL_ORDER.map((signal) => {
-      const signalRows = performance.rows.filter((candidate) => getCandidateSignalKey(candidate, runByKey) === signal);
-      const readyRows = signalRows.filter((row) => row.returnPct !== null);
-
-      return {
-        signal,
-        label: getSignalLabel(signal),
-        candidateCount: signalRows.length,
-        monitoredCount: readyRows.length,
-        averageReturn:
-          readyRows.length === 0
-            ? null
-            : readyRows.reduce((sum, row) => sum + Number(row.returnPct || 0), 0) / readyRows.length,
-      };
-    });
-  }, [performance.rows, runByKey]);
+  }, [perf.rows]);
 
   const schemaMissing = isSchemaMissing(runsError) || isSchemaMissing(candidatesError) || isSchemaMissing(syncError);
   const isLoading = runsLoading || syncLoading || priceDatesLoading;
   const isRefreshing =
-    runsFetching || syncFetching || priceDatesFetching || candidatesFetching || performance.isFetching || performance.isLatestDateFetching;
+    runsFetching || syncFetching || priceDatesFetching || candidatesFetching || perf.isFetching || perf.isLatestDateFetching || archiveMonthFetching;
   const selectedRunGuide = runSignalFilter === "all" ? null : getSignalGuide(runSignalFilter);
   const selectedDateHasScreening = runsForSelectedDate.length > 0;
   const selectedDateHasPrice = runDateFilter ? priceDateOptions.includes(runDateFilter) : false;
@@ -556,10 +549,10 @@ export function ScreeningMonitor() {
     refetchRuns();
     refetchSync();
     refetchPriceDates();
-    if (selectedDateRunKeys.length > 0) {
+    if (filteredRunKeys.length > 0) {
       refetchCandidates();
     }
-    void performance.refetch();
+    void perf.refetch();
   };
 
   if (schemaMissing) {
@@ -594,7 +587,7 @@ export function ScreeningMonitor() {
     );
   }
 
-  if (!isLoading && runs.length === 0) {
+  if (!isLoading && runs.length === 0 && !(archiveManifest && archiveManifest.archive_dates.length > 0)) {
     return (
       <Card className="border-dashed shadow-none">
         <CardHeader>
@@ -687,105 +680,24 @@ export function ScreeningMonitor() {
         />
         <MetricCard
           title="평균 수익률"
-          value={screeningStats.averageReturn !== null ? formatPercent(screeningStats.averageReturn) : "-"}
+          value={perf.summary.monitoredCount > 0 ? formatPercent(perf.summary.averageReturn) : "-"}
           note={
             !selectedDateHasScreening && selectedDateHasPrice
               ? "스크리닝 미실행일이라 성과 계산 대상이 없습니다"
-              : screeningStats.monitoredCount > 0
-                ? `${formatNumber(screeningStats.monitoredCount)}개 종목이 성과 계산에 반영되었습니다`
+              : perf.summary.monitoredCount > 0
+              ? `${formatNumber(perf.summary.monitoredCount)}개 종목이 성과 계산에 반영되었습니다`
               : "아직 성과 계산에 반영된 가격이 없습니다"
           }
-          loading={performance.isLoading}
+          loading={perf.isLoading}
           icon={<TrendingUp className="h-4 w-4" />}
         />
         <MetricCard
           title="최근 반영 거래일"
-          value={formatDateLabel(screeningStats.latestReferenceDate || performance.latestAvailableTradeDate)}
-          note={
-            screeningStats.monitoredCount > 0
-              ? `${formatNumber(screeningStats.monitoredCount)}개 종목의 최근 종가가 반영되었습니다`
-              : "최근 종가가 아직 성과표에 반영되지 않았습니다"
-          }
-          loading={performance.isLoading}
+          value={formatDateLabel(perf.summary.latestReferenceDate || perf.latestAvailableTradeDate)}
+          note={`최고가 수익률 ${formatPercent(perf.summary.bestReturn)} / 최저가 수익률 ${formatPercent(perf.summary.worstDrawdown)}`}
+          loading={perf.isLoading}
           icon={<BookOpenText className="h-4 w-4" />}
         />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr),minmax(320px,1fr)]">
-        <Card className="shadow-none">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg">라벨별 요약</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {signalSummaries.map((summary) => (
-                <LabelSummaryCard
-                  key={summary.signal}
-                  title={summary.label}
-                  value={summary.candidateCount > 0 ? `후보 ${formatNumber(summary.candidateCount)}개` : "후보 없음"}
-                  note={
-                    summary.candidateCount === 0
-                      ? "수익률 없음"
-                      : summary.averageReturn !== null
-                        ? formatPercent(summary.averageReturn)
-                        : "성과 반영 대기"
-                  }
-                  noteTone={
-                    summary.averageReturn === null
-                      ? "muted"
-                      : summary.averageReturn > 0
-                        ? "up"
-                        : summary.averageReturn < 0
-                          ? "down"
-                          : "neutral"
-                  }
-                  active={runSignalFilter === summary.signal}
-                  loading={candidatesLoading || performance.isLoading}
-                />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="flex flex-col shadow-none">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg">최고/최저 수익률</CardTitle>
-          </CardHeader>
-          <CardContent className="grid flex-1 gap-2 min-h-0 md:grid-cols-2 xl:grid-cols-1 xl:grid-rows-2">
-            <ExtremeMetricCard
-              title="최고가 수익률"
-              value={
-                screeningStats.bestCandidate?.maxReturnPct !== null && screeningStats.bestCandidate?.maxReturnPct !== undefined
-                  ? formatPercent(screeningStats.bestCandidate.maxReturnPct)
-                  : "-"
-              }
-              note={
-                screeningStats.bestCandidate
-                  ? `${getSignalLabel(getCandidateSignalKey(screeningStats.bestCandidate, runByKey))} · ${screeningStats.bestCandidate.stock_name}`
-                  : "아직 최고가 수익률을 계산할 종목이 없습니다"
-              }
-              tone="up"
-              loading={performance.isLoading}
-              icon={<ArrowUpRight className="h-4 w-4" />}
-            />
-            <ExtremeMetricCard
-              title="최저가 수익률"
-              value={
-                screeningStats.worstCandidate?.maxDrawdownPct !== null && screeningStats.worstCandidate?.maxDrawdownPct !== undefined
-                  ? formatPercent(screeningStats.worstCandidate.maxDrawdownPct)
-                  : "-"
-              }
-              note={
-                screeningStats.worstCandidate
-                  ? `${getSignalLabel(getCandidateSignalKey(screeningStats.worstCandidate, runByKey))} · ${screeningStats.worstCandidate.stock_name}`
-                  : "아직 최저가 수익률을 계산할 종목이 없습니다"
-              }
-              tone="down"
-              loading={performance.isLoading}
-              icon={<ArrowDownRight className="h-4 w-4" />}
-            />
-          </CardContent>
-        </Card>
       </div>
 
       <Card className="shadow-none">
@@ -844,13 +756,13 @@ export function ScreeningMonitor() {
             </label>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,2fr),minmax(320px,1fr)]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr),320px]">
             <div className="rounded-2xl border bg-muted/30 p-4 text-sm text-muted-foreground">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-medium text-foreground">현재 선택</p>
                 {runSignalFilter === "all" ? <Badge variant="outline">전체</Badge> : <SignalGuideBadge signal={runSignalFilter} />}
-                {runSignalFilter !== "all" && selectedSignalRun ? (
-                  <Badge variant={getStatusVariant(selectedSignalRun.status)}>{selectedSignalRun.status}</Badge>
+                {runSignalFilter !== "all" && referenceRun ? (
+                  <Badge variant={getStatusVariant(referenceRun.status)}>{referenceRun.status}</Badge>
                 ) : null}
                 {!selectedDateHasScreening && selectedDateHasPrice ? <Badge variant="secondary">스크리닝 미실행</Badge> : null}
               </div>
@@ -859,14 +771,21 @@ export function ScreeningMonitor() {
                   <p className="mt-2 text-foreground">{runSignalFilter === "all" ? "전체 라벨 종목" : selectedSignalLabel}</p>
                   <p className="mt-1">{selectedRunTiming}</p>
                   <p className="mt-2">
-                    후보 {formatNumber(screeningStats.candidateCount)}개, 성과 반영 {formatNumber(screeningStats.monitoredCount)}개
+                    후보 {formatNumber(screeningStats.candidateCount)}개, 평균 점수 {formatScore(screeningStats.averageScore)}, 최고 점수 {formatScore(screeningStats.topScore)}
                   </p>
                   {selectedRunGuide ? (
                     <>
                       <p className="mt-2">{selectedRunGuide.summary}</p>
                       <p className="mt-1">{selectedRunGuide.horizon}</p>
                     </>
-                  ) : null}
+                  ) : (
+                    <>
+                      <p className="mt-2">
+                        전체 라벨을 선택하면 종목은 <code className="font-mono text-xs">strategy_a → strategy_b → cash → overlap → spike → rebound</code> 순서로 먼저 정렬됩니다.
+                      </p>
+                      <p className="mt-1">같은 라벨 안에서는 순위가 높은 종목부터 표시됩니다.</p>
+                    </>
+                  )}
                 </>
               ) : selectedDateHasPrice ? (
                 <>
@@ -907,9 +826,9 @@ export function ScreeningMonitor() {
                     : "상단 필터에서 기준일을 선택하면 후보 종목의 성과를 볼 수 있습니다."}
               </CardDescription>
             </div>
-            {runSignalFilter !== "all" && selectedSignalRun?.notes ? (
+            {runSignalFilter !== "all" && referenceRun?.notes ? (
               <div className="max-w-sm rounded-2xl bg-muted px-3 py-2 text-xs text-muted-foreground">
-                {selectedSignalRun.notes}
+                {referenceRun.notes}
               </div>
             ) : null}
           </div>
@@ -947,7 +866,7 @@ export function ScreeningMonitor() {
                 ? "이 날짜는 스크리닝 미실행일이라 표시할 후보 종목이 없습니다. 가격 데이터는 이미 적재되어 있습니다."
                 : "조건에 맞는 run이 없어 아직 표시할 종목이 없습니다."}
             </div>
-          ) : candidatesLoading || performance.isLoading ? (
+          ) : candidatesLoading || perf.isLoading ? (
             <div className="space-y-2">
               {Array.from({ length: 6 }).map((_, index) => (
                 <Skeleton key={index} className="h-12 w-full rounded-xl" />
@@ -1059,7 +978,7 @@ export function ScreeningMonitor() {
         </CardContent>
       </Card>
 
-      {(syncStatus?.last_error || runsError || candidatesError || performance.error) && (
+      {(syncStatus?.last_error || runsError || candidatesError || perf.error) && (
         <Card className="border-destructive/40 bg-destructive/5 shadow-none">
           <CardContent className="flex gap-3 p-4 text-sm">
             <AlertTriangle className="mt-0.5 h-4 w-4 text-destructive" />
@@ -1068,8 +987,8 @@ export function ScreeningMonitor() {
               {syncStatus?.last_error ? <p>{syncStatus.last_error}</p> : null}
               {!syncStatus?.last_error && runsError ? <p>{getErrorMessage(runsError)}</p> : null}
               {!syncStatus?.last_error && !runsError && candidatesError ? <p>{getErrorMessage(candidatesError)}</p> : null}
-              {!syncStatus?.last_error && !runsError && !candidatesError && performance.error ? (
-                <p>{getErrorMessage(performance.error)}</p>
+              {!syncStatus?.last_error && !runsError && !candidatesError && perf.error ? (
+                <p>{getErrorMessage(perf.error)}</p>
               ) : null}
             </div>
           </CardContent>
@@ -1163,72 +1082,6 @@ function MetricCard({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function LabelSummaryCard({
-  title,
-  value,
-  note,
-  noteTone,
-  active,
-  loading,
-}: {
-  title: string;
-  value: string;
-  note: string;
-  noteTone: "up" | "down" | "neutral" | "muted";
-  active?: boolean;
-  loading: boolean;
-}) {
-  const noteClassName =
-    noteTone === "up"
-      ? "text-up"
-      : noteTone === "down"
-        ? "text-down"
-        : noteTone === "neutral"
-          ? "text-foreground"
-          : "text-muted-foreground";
-
-  return (
-    <div className={`rounded-2xl border p-3 ${active ? "border-primary/40 bg-primary/5" : "bg-background"}`}>
-      <p className="text-xs font-medium text-foreground">{title}</p>
-      {loading ? <Skeleton className="mt-2 h-5 w-24" /> : <p className="mt-2 text-base font-semibold text-foreground">{value}</p>}
-      <p className={`mt-1 text-base font-semibold leading-tight ${noteClassName}`}>{note}</p>
-    </div>
-  );
-}
-
-function ExtremeMetricCard({
-  title,
-  value,
-  note,
-  tone,
-  loading,
-  icon,
-}: {
-  title: string;
-  value: string;
-  note: string;
-  tone: "up" | "down";
-  loading: boolean;
-  icon: ReactNode;
-}) {
-  return (
-    <div className={`rounded-2xl border p-3 ${tone === "up" ? "bg-up-subtle/40" : "bg-down-subtle/30"}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-foreground">{title}</p>
-          {loading ? (
-            <Skeleton className="h-5 w-24" />
-          ) : (
-            <p className={`text-lg font-semibold ${tone === "up" ? "text-up" : "text-down"}`}>{value}</p>
-          )}
-          <p className="text-sm leading-tight text-muted-foreground">{note}</p>
-        </div>
-        <div className="rounded-2xl bg-background/80 p-1.5 text-muted-foreground">{icon}</div>
-      </div>
-    </div>
   );
 }
 

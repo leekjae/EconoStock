@@ -4,7 +4,6 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SUPABASE_PROJECT_ID, SUPABASE_PUBLISHABLE_KEY } from "@/integrations/supabase/config";
 import { Download, Search, X, AlertCircle, RefreshCw, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -49,13 +48,15 @@ interface ThemeComponentsResponse {
 }
 
 function getProxyBaseUrl() {
-  return `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/pykrx-proxy`;
+  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+  return `https://${projectId}.supabase.co/functions/v1/pykrx-proxy`;
 }
 
 function getHeaders() {
+  const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
   return {
-    apikey: SUPABASE_PUBLISHABLE_KEY,
-    Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+    apikey: anonKey,
+    Authorization: `Bearer ${anonKey}`,
   };
 }
 

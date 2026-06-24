@@ -1,19 +1,16 @@
-import {
-  SUPABASE_PROJECT_ID,
-  SUPABASE_PUBLISHABLE_KEY,
-} from "@/integrations/supabase/config";
-
 const getProxyUrl = () => {
-  const base = `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/krx-proxy`;
+  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+  const base = `https://${projectId}.supabase.co/functions/v1/krx-proxy`;
   return base;
 };
 
 const LIVE_CACHE_MS = 60 * 1000;
 
 const getHeaders = () => {
+  const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
   return {
-    Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-    apikey: SUPABASE_PUBLISHABLE_KEY,
+    Authorization: `Bearer ${anonKey}`,
+    apikey: anonKey,
   };
 };
 
