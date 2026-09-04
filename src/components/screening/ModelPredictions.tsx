@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 type PredictionRun = Tables<"model_prediction_runs">;
 type PredictionCandidate = Tables<"model_prediction_candidates">;
+type PredictionForwardPrice = Tables<"model_prediction_forward_prices">;
 
 async function fetchPredictionRuns() {
   const { data, error } = await supabase
@@ -29,6 +30,17 @@ async function fetchPredictionCandidates(tradeDate: string) {
     .select("*")
     .eq("trade_date", tradeDate)
     .order("rank_no", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function fetchPredictionForwardPrices(tradeDate: string) {
+  const { data, error } = await supabase
+    .from("model_prediction_forward_prices")
+    .select("*")
+    .eq("signal_date", tradeDate)
+    .order("horizon_day", { ascending: true })
+    .order("ticker", { ascending: true });
   if (error) throw error;
   return data ?? [];
 }
@@ -63,6 +75,11 @@ function formatPercent(value: number | null | undefined) {
   return `${sign}${percentage.toFixed(1)}%`;
 }
 
+function formatPrice(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
+  return `${Math.round(Number(value)).toLocaleString("ko-KR")}원`;
+}
+
 function percentTone(value: number | null | undefined) {
   if (value === null || value === undefined) return "text-muted-foreground";
   return Number(value) > 0 ? "text-up" : Number(value) < 0 ? "text-down" : "text-foreground";
@@ -80,7 +97,7 @@ function confidenceLabel(value: string) {
 
 function isMissingTableError(error: unknown) {
   const message = error && typeof error === "object" && "message" in error ? String(error.message) : String(error || "");
-  return /model_prediction_runs|model_prediction_candidates|does not exist|schema cache/i.test(message);
+  return /model_prediction_runs|model_prediction_candidates|model_prediction_forward_prices|does not exist|schema cache/i.test(message);
 }
 
 export function ModelPredictions() {
@@ -101,9 +118,21 @@ export function ModelPredictions() {
     enabled: Boolean(selectedDate),
   });
   const candidates = (candidatesQuery.data ?? []) as PredictionCandidate[];
+  const forwardPricesQuery = useQuery({
+    queryKey: ["model-prediction-forward-prices", selectedDate],
+    queryFn: () => fetchPredictionForwardPrices(selectedDate),
+    enabled: Boolean(selectedDate),
+  });
+  const forwardPrices = (forwardPricesQuery.data ?? []) as PredictionForwardPrice[];
+  const forwardPriceMap = useMemo(
+    () => new Map(forwardPrices.map((row) => [`${row.ticker}:${row.horizon_day}`, row])),
+    [forwardPrices],
+  );
   const selectedRun = useMemo(() => runs.find((run) => run.trade_date === selectedDate), [runs, selectedDate]);
-  const isLoading = runsQuery.isLoading || (Boolean(selectedDate) && candidatesQuery.isLoading);
-  const error = runsQuery.error || candidatesQuery.error;
+  const isLoading =
+    runsQuery.isLoading ||
+    (Boolean(selectedDate) && (candidatesQuery.isLoading || forwardPricesQuery.isLoading));
+  const error = runsQuery.error || candidatesQuery.error || forwardPricesQuery.error;
 
   if (error) {
     return (
@@ -170,11 +199,14 @@ export function ModelPredictions() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <Table className="min-w-[1180px]">
+                <Table className="min-w-[1580px]">
                   <TableHeader>
                     <TableRow className="bg-muted/40">
                       <TableHead className="w-14 text-center">순위</TableHead>
                       <TableHead className="min-w-40">종목</TableHead>
+                      <ForwardHighHead horizon={1} />
+                      <ForwardHighHead horizon={2} />
+                      <ForwardHighHead horizon={3} />
                       <TableHead className="text-right">상승 확률</TableHead>
                       <TableHead className="text-right">+5% 이상 확률</TableHead>
                       <TableHead className="text-right">예상 종가 수익률</TableHead>
@@ -193,6 +225,9 @@ export function ModelPredictions() {
                           <p className="font-semibold text-foreground">{candidate.stock_name || "-"}</p>
                           <p className="mt-0.5 text-[11px] text-muted-foreground">{candidate.ticker} · {candidate.market}</p>
                         </TableCell>
+                        <ForwardHighCell row={forwardPriceMap.get(`${candidate.ticker}:1`)} />
+                        <ForwardHighCell row={forwardPriceMap.get(`${candidate.ticker}:2`)} />
+                        <ForwardHighCell row={forwardPriceMap.get(`${candidate.ticker}:3`)} />
                         <TableCell className="text-right tabular-nums">{formatPercent(candidate.p_up_1d)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatPercent(candidate.p_max_up_ge_5pct_1d)}</TableCell>
                         <TableCell className={`text-right font-medium tabular-nums ${percentTone(candidate.pred_return_1d)}`}>
@@ -216,7 +251,7 @@ export function ModelPredictions() {
                       </TableRow>
                     ))}
                     {candidates.length === 0 ? (
-                      <TableRow><TableCell colSpan={10} className="h-32 text-center text-muted-foreground">후보 데이터가 없습니다.</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={13} className="h-32 text-center text-muted-foreground">후보 데이터가 없습니다.</TableCell></TableRow>
                     ) : null}
                   </TableBody>
                 </Table>
@@ -226,6 +261,31 @@ export function ModelPredictions() {
         </>
       )}
     </div>
+  );
+}
+
+function ForwardHighHead({ horizon }: { horizon: number }) {
+  return (
+    <TableHead className="min-w-32 text-right">
+      <span className="block">+{horizon}영업일</span>
+      <span className="block text-[10px] font-normal text-muted-foreground">고가(상승률)</span>
+    </TableHead>
+  );
+}
+
+function ForwardHighCell({ row }: { row: PredictionForwardPrice | undefined }) {
+  if (!row || row.high_price === null || row.high_return === null) {
+    return <TableCell className="text-right text-xs text-muted-foreground">데이터 미확보</TableCell>;
+  }
+
+  return (
+    <TableCell className="text-right tabular-nums">
+      <p className="font-medium text-foreground">{formatPrice(row.high_price)}</p>
+      <p className={`mt-0.5 text-xs font-semibold ${percentTone(row.high_return)}`}>
+        {formatPercent(row.high_return)}
+      </p>
+      <p className="mt-0.5 text-[10px] text-muted-foreground">{formatDate(row.trade_date)}</p>
+    </TableCell>
   );
 }
 

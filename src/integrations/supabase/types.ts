@@ -247,6 +247,50 @@ export type Database = {
           },
         ]
       }
+      model_prediction_forward_prices: {
+        Row: {
+          base_close: number
+          created_at: string
+          high_price: number | null
+          high_return: number | null
+          horizon_day: number
+          signal_date: string
+          ticker: string
+          trade_date: string
+          updated_at: string
+        }
+        Insert: {
+          base_close: number
+          created_at?: string
+          high_price?: number | null
+          high_return?: number | null
+          horizon_day: number
+          signal_date: string
+          ticker: string
+          trade_date: string
+          updated_at?: string
+        }
+        Update: {
+          base_close?: number
+          created_at?: string
+          high_price?: number | null
+          high_return?: number | null
+          horizon_day?: number
+          signal_date?: string
+          ticker?: string
+          trade_date?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "model_prediction_forward_prices_signal_date_ticker_fkey"
+            columns: ["signal_date", "ticker"]
+            isOneToOne: false
+            referencedRelation: "model_prediction_candidates"
+            referencedColumns: ["trade_date", "ticker"]
+          },
+        ]
+      }
       naver_theme_stocks: {
         Row: {
           rank_no: number
