@@ -36,11 +36,19 @@ export const SCREENING_MENU: MenuItem = {
   category: "screening",
 };
 
+export const MODEL_PREDICTION_MENU: MenuItem = {
+  id: "model_predictions",
+  screenId: "SCR002",
+  label: "모델 예측 종목",
+  endpoint: "model-predictions",
+  category: "model_prediction",
+};
+
 export const MENU_STRUCTURE: MenuCategory[] = [
   {
     id: "screening",
     label: "스크리닝 결과",
-    items: [SCREENING_MENU],
+    items: [SCREENING_MENU, MODEL_PREDICTION_MENU],
   },
   {
     id: "investor",

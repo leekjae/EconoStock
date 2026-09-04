@@ -122,6 +122,131 @@ export type Database = {
         }
         Relationships: []
       }
+      model_prediction_runs: {
+        Row: {
+          candidate_count: number
+          created_at: string
+          generated_at: string
+          model_name: string
+          model_train_through: string | null
+          trade_date: string
+          updated_at: string
+        }
+        Insert: {
+          candidate_count?: number
+          created_at?: string
+          generated_at: string
+          model_name?: string
+          model_train_through?: string | null
+          trade_date: string
+          updated_at?: string
+        }
+        Update: {
+          candidate_count?: number
+          created_at?: string
+          generated_at?: string
+          model_name?: string
+          model_train_through?: string | null
+          trade_date?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      model_prediction_candidates: {
+        Row: {
+          all_theme_names: string
+          confidence: string
+          consensus_rank: number | null
+          consensus_top_n: boolean
+          created_at: string
+          expansion_rank: number | null
+          in_screening: boolean
+          market: string
+          model_rank: number | null
+          model_score: number | null
+          p_max_up_ge_5pct_1d: number | null
+          p_top20_return_1d: number | null
+          p_up_1d: number | null
+          pred_excess_return_1d: number | null
+          pred_max_downside_1d: number | null
+          pred_max_upside_1d: number | null
+          pred_return_1d: number | null
+          primary_theme_name: string
+          rank_no: number
+          selection_tier: string
+          stock_name: string
+          theme_top_n: boolean
+          ticker: string
+          trade_date: string
+          updated_at: string
+          validated_model_name: string
+        }
+        Insert: {
+          all_theme_names?: string
+          confidence?: string
+          consensus_rank?: number | null
+          consensus_top_n?: boolean
+          created_at?: string
+          expansion_rank?: number | null
+          in_screening?: boolean
+          market?: string
+          model_rank?: number | null
+          model_score?: number | null
+          p_max_up_ge_5pct_1d?: number | null
+          p_top20_return_1d?: number | null
+          p_up_1d?: number | null
+          pred_excess_return_1d?: number | null
+          pred_max_downside_1d?: number | null
+          pred_max_upside_1d?: number | null
+          pred_return_1d?: number | null
+          primary_theme_name?: string
+          rank_no: number
+          selection_tier?: string
+          stock_name?: string
+          theme_top_n?: boolean
+          ticker: string
+          trade_date: string
+          updated_at?: string
+          validated_model_name?: string
+        }
+        Update: {
+          all_theme_names?: string
+          confidence?: string
+          consensus_rank?: number | null
+          consensus_top_n?: boolean
+          created_at?: string
+          expansion_rank?: number | null
+          in_screening?: boolean
+          market?: string
+          model_rank?: number | null
+          model_score?: number | null
+          p_max_up_ge_5pct_1d?: number | null
+          p_top20_return_1d?: number | null
+          p_up_1d?: number | null
+          pred_excess_return_1d?: number | null
+          pred_max_downside_1d?: number | null
+          pred_max_upside_1d?: number | null
+          pred_return_1d?: number | null
+          primary_theme_name?: string
+          rank_no?: number
+          selection_tier?: string
+          stock_name?: string
+          theme_top_n?: boolean
+          ticker?: string
+          trade_date?: string
+          updated_at?: string
+          validated_model_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "model_prediction_candidates_trade_date_fkey"
+            columns: ["trade_date"]
+            isOneToOne: false
+            referencedRelation: "model_prediction_runs"
+            referencedColumns: ["trade_date"]
+          },
+        ]
+      }
       naver_theme_stocks: {
         Row: {
           rank_no: number

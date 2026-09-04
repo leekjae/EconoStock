@@ -15,6 +15,7 @@ import { InvestorTopEquities } from "@/components/market/InvestorTopEquities";
 import { IndexExplorer } from "@/components/market/IndexExplorer";
 import { AveragePriceCalculator } from "@/components/market/AveragePriceCalculator";
 import { ScreeningMonitor } from "@/components/screening/ScreeningMonitor";
+import { ModelPredictions } from "@/components/screening/ModelPredictions";
 import { Card, CardContent } from "@/components/ui/card";
 
 const DEFAULT_MENU = HOME_MENU;
@@ -96,6 +97,12 @@ const Index = () => {
           {selectedMenu.category === "screening" ? (
             <div className="h-full overflow-auto p-4">
               <ScreeningMonitor />
+            </div>
+          ) : null}
+
+          {selectedMenu.category === "model_prediction" ? (
+            <div className="h-full overflow-auto p-4">
+              <ModelPredictions />
             </div>
           ) : null}
 
