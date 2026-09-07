@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BrainCircuit, CalendarDays, Clock3, Database, Info } from "lucide-react";
+import { BrainCircuit, CalendarDays, ChevronDown, Clock3, Database, Info } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { Badge } from "@/components/ui/badge";
+import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
@@ -50,6 +51,20 @@ function formatDate(value: string | null | undefined) {
   const normalized = value.replace(/-/g, "");
   if (!/^\d{8}$/.test(normalized)) return value;
   return `${normalized.slice(0, 4)}.${normalized.slice(4, 6)}.${normalized.slice(6, 8)}`;
+}
+
+function dateFromIso(value: string | null | undefined) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function isoFromDate(value: Date | undefined) {
+  if (!value) return null;
+  const year = String(value.getFullYear());
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatGeneratedAt(value: string | null | undefined) {
@@ -154,28 +169,11 @@ export function ModelPredictions() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">다음 거래일 상승 후보</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            장 마감 데이터로 계산한 모델 상위 후보입니다. 예측값은 가능성을 나타내며 수익을 보장하지 않습니다.
-          </p>
-        </div>
-        <div className="w-full sm:w-48">
-          <label className="mb-1.5 block text-xs font-semibold">기준일</label>
-          <Select value={selectedDate} onValueChange={setSelectedDate} disabled={runs.length === 0}>
-            <SelectTrigger className="h-9 bg-background text-xs">
-              <SelectValue placeholder="기준일 선택" />
-            </SelectTrigger>
-            <SelectContent>
-              {runs.map((run) => (
-                <SelectItem key={run.trade_date} value={run.trade_date}>
-                  {formatDate(run.trade_date)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div>
+        <h1 className="text-xl font-bold tracking-tight">다음 거래일 상승 후보</h1>
+        <p className="mt-1 text-xs text-muted-foreground">
+          장 마감 데이터로 계산한 모델 상위 후보입니다. 예측값은 가능성을 나타내며 수익을 보장하지 않습니다.
+        </p>
       </div>
 
       {isLoading ? (
@@ -187,7 +185,11 @@ export function ModelPredictions() {
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <SummaryCard icon={CalendarDays} label="기준일" value={formatDate(selectedRun?.trade_date)} />
+            <DateSummaryCard
+              runs={runs}
+              selectedDate={selectedRun?.trade_date ?? selectedDate}
+              onDateChange={setSelectedDate}
+            />
             <SummaryCard icon={Clock3} label="생성 일시" value={formatGeneratedAt(selectedRun?.generated_at)} />
             <SummaryCard icon={BrainCircuit} label="상승 후보" value={`${selectedRun?.candidate_count ?? candidates.length}개`} />
             <SummaryCard icon={Database} label="모델 학습 기준일" value={formatDate(selectedRun?.model_train_through)} />
@@ -261,6 +263,62 @@ export function ModelPredictions() {
         </>
       )}
     </div>
+  );
+}
+
+function DateSummaryCard({
+  runs,
+  selectedDate,
+  onDateChange,
+}: {
+  runs: PredictionRun[];
+  selectedDate: string;
+  onDateChange: (date: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const availableDates = useMemo(() => new Set(runs.map((run) => run.trade_date)), [runs]);
+  const selected = dateFromIso(selectedDate);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Card className="border-slate-200 bg-white/95 shadow-sm">
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-slate-50"
+            aria-label={`기준일 ${formatDate(selectedDate)}. 달력에서 날짜 선택`}
+          >
+            <div className="rounded-lg bg-slate-100 p-2 text-slate-600">
+              <CalendarDays className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium text-muted-foreground">기준일</p>
+              <p className="mt-0.5 truncate text-sm font-semibold text-foreground">
+                {formatDate(selectedDate)}
+              </p>
+            </div>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+      </Card>
+      <PopoverContent className="w-auto p-0" align="start">
+        <Calendar
+          mode="single"
+          selected={selected}
+          defaultMonth={selected ?? dateFromIso(runs[0]?.trade_date) ?? new Date()}
+          onSelect={(date) => {
+            const isoDate = isoFromDate(date);
+            if (isoDate && availableDates.has(isoDate)) {
+              onDateChange(isoDate);
+              setOpen(false);
+            }
+          }}
+          disabled={(date) => !availableDates.has(isoFromDate(date) ?? "")}
+          initialFocus
+          className="pointer-events-auto p-3"
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 
