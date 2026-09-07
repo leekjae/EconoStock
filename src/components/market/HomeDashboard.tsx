@@ -104,7 +104,7 @@ export function HomeDashboard({ basDd, dateLoading }: HomeDashboardProps) {
   }, [kospiHistory, kosdaqHistory, kospi200History]);
 
   return (
-    <div className="flex-1 overflow-auto p-6 space-y-6">
+    <div className="space-y-4 p-3 sm:space-y-6 sm:p-6">
       {/* Title */}
       <div>
         <h1 className="text-lg font-bold text-foreground">KRX 시장현황 대시보드</h1>

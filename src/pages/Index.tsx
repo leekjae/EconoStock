@@ -127,7 +127,7 @@ const Index = () => {
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden">
           {selectedMenu.category === "home" ? (
             <MarketHome basDd={latestDate} dateLoading={dateLoading} />
           ) : null}
@@ -169,7 +169,10 @@ const Index = () => {
 
 function MarketHome({ basDd, dateLoading }: { basDd?: string; dateLoading: boolean }) {
   return (
-    <div className="flex h-full flex-col gap-4 overflow-auto p-3 sm:p-4">
+    <div
+      className="h-full min-h-0 touch-pan-y overflow-y-auto overscroll-y-contain p-3 sm:p-4"
+      style={{ WebkitOverflowScrolling: "touch" }}
+    >
       <Card className="overflow-hidden border-slate-200 bg-white/95 shadow-sm">
         <CardContent className="p-0">
           <div className="min-h-[620px]">
