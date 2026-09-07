@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Menu } from "lucide-react";
 
 import { useBusinessDate } from "@/hooks/useKrxData";
 import {
@@ -16,7 +16,9 @@ import { IndexExplorer } from "@/components/market/IndexExplorer";
 import { AveragePriceCalculator } from "@/components/market/AveragePriceCalculator";
 import { ScreeningMonitor } from "@/components/screening/ScreeningMonitor";
 import { ModelPredictions } from "@/components/screening/ModelPredictions";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 const DEFAULT_MENU = HOME_MENU;
 
@@ -35,6 +37,7 @@ const Index = () => {
   const { data: latestDate, isLoading: dateLoading } = useBusinessDate();
   const [selectedMenu, setSelectedMenu] = useState<MenuItem>(DEFAULT_MENU);
   const [initialDate, setInitialDate] = useState<Date | undefined>();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     if (!initialDate && latestDate) {
@@ -63,24 +66,59 @@ const Index = () => {
       ? `${latestDate.slice(0, 4)}.${latestDate.slice(4, 6)}.${latestDate.slice(6, 8)}`
       : latestDate;
 
+  const handleMenuSelect = (item: MenuItem) => {
+    setSelectedMenu(item);
+    setMobileMenuOpen(false);
+  };
+
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <KrxSidebar selectedMenuId={selectedMenu.id} onMenuSelect={setSelectedMenu} />
+    <div className="flex h-dvh overflow-hidden bg-background">
+      <KrxSidebar
+        selectedMenuId={selectedMenu.id}
+        onMenuSelect={handleMenuSelect}
+        className="hidden md:flex"
+      />
+
+      <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+        <SheetContent side="left" className="w-[280px] max-w-[85vw] p-0 md:hidden">
+          <SheetTitle className="sr-only">EconoStock 메뉴</SheetTitle>
+          <KrxSidebar
+            selectedMenuId={selectedMenu.id}
+            onMenuSelect={handleMenuSelect}
+            className="w-full min-w-0 border-r-0"
+            headerLabel="EconoStock 메뉴"
+          />
+        </SheetContent>
+      </Sheet>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-10 items-center justify-between border-b border-border bg-background px-4 shrink-0">
-          <nav className="flex items-center gap-1 text-xs">
-            {breadcrumb.parent ? (
-              <>
-                <span className="text-muted-foreground">{breadcrumb.parent}</span>
-                <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                <span className="font-bold text-foreground">{breadcrumb.current}</span>
-              </>
-            ) : (
-              <span className="font-bold text-foreground">{breadcrumb.current}</span>
-            )}
-          </nav>
-          <div className="flex items-center gap-3">
+        <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-2 sm:px-4">
+          <div className="flex min-w-0 items-center gap-1 sm:gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 md:hidden"
+              onClick={() => setMobileMenuOpen(true)}
+            >
+              <Menu className="h-4 w-4" />
+              <span className="sr-only">메뉴 열기</span>
+            </Button>
+            <nav className="flex min-w-0 items-center gap-1 overflow-hidden text-xs">
+              {breadcrumb.parent ? (
+                <>
+                  <span className="hidden shrink-0 text-muted-foreground sm:inline">
+                    {breadcrumb.parent}
+                  </span>
+                  <ChevronRight className="hidden h-3 w-3 shrink-0 text-muted-foreground sm:block" />
+                  <span className="truncate font-bold text-foreground">{breadcrumb.current}</span>
+                </>
+              ) : (
+                <span className="truncate font-bold text-foreground">{breadcrumb.current}</span>
+              )}
+            </nav>
+          </div>
+          <div className="hidden shrink-0 items-center gap-3 sm:flex">
             {dateLoading ? (
               <span className="text-[10px] text-muted-foreground">기준 영업일 불러오는 중...</span>
             ) : latestDateLabel ? (
@@ -95,13 +133,13 @@ const Index = () => {
           ) : null}
 
           {selectedMenu.category === "screening" ? (
-            <div className="h-full overflow-auto p-4">
+            <div className="h-full overflow-auto p-3 sm:p-4">
               <ScreeningMonitor />
             </div>
           ) : null}
 
           {selectedMenu.category === "model_prediction" ? (
-            <div className="h-full overflow-auto p-4">
+            <div className="h-full overflow-auto p-3 sm:p-4">
               <ModelPredictions />
             </div>
           ) : null}
@@ -131,7 +169,7 @@ const Index = () => {
 
 function MarketHome({ basDd, dateLoading }: { basDd?: string; dateLoading: boolean }) {
   return (
-    <div className="flex h-full flex-col gap-4 overflow-auto p-4">
+    <div className="flex h-full flex-col gap-4 overflow-auto p-3 sm:p-4">
       <Card className="overflow-hidden border-slate-200 bg-white/95 shadow-sm">
         <CardContent className="p-0">
           <div className="min-h-[620px]">

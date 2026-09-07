@@ -95,9 +95,16 @@ export const TOOLS_MENU: MenuCategory = {
 interface KrxSidebarProps {
   selectedMenuId: string;
   onMenuSelect: (item: MenuItem) => void;
+  className?: string;
+  headerLabel?: string;
 }
 
-export function KrxSidebar({ selectedMenuId, onMenuSelect }: KrxSidebarProps) {
+export function KrxSidebar({
+  selectedMenuId,
+  onMenuSelect,
+  className,
+  headerLabel,
+}: KrxSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set([...MENU_STRUCTURE.map((category) => category.id), TOOLS_MENU.id]),
@@ -131,7 +138,17 @@ export function KrxSidebar({ selectedMenuId, onMenuSelect }: KrxSidebarProps) {
   }, [searchQuery]);
 
   return (
-    <div className="flex h-full w-56 min-w-[224px] flex-col border-r border-border bg-sidebar">
+    <div
+      className={cn(
+        "flex h-full w-56 min-w-[224px] flex-col border-r border-border bg-sidebar",
+        className,
+      )}
+    >
+      {headerLabel ? (
+        <div className="flex h-11 shrink-0 items-center border-b border-sidebar-border px-3 pr-12 text-sm font-semibold text-sidebar-foreground">
+          {headerLabel}
+        </div>
+      ) : null}
       <div className="border-b border-sidebar-border p-3">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
