@@ -206,6 +206,7 @@ export function ModelPredictions() {
                     <TableRow className="bg-muted/40">
                       <TableHead className="w-14 text-center">순위</TableHead>
                       <TableHead className="min-w-40">종목</TableHead>
+                      <TableHead className="min-w-44">주요 테마</TableHead>
                       <ForwardHighHead horizon={1} />
                       <ForwardHighHead horizon={2} />
                       <ForwardHighHead horizon={3} />
@@ -215,7 +216,6 @@ export function ModelPredictions() {
                       <TableHead className="text-right">예상 최고 상승률</TableHead>
                       <TableHead className="text-right">예상 최대 하락률</TableHead>
                       <TableHead className="min-w-32">모델 합의</TableHead>
-                      <TableHead className="min-w-44">주요 테마</TableHead>
                       <TableHead className="text-center">기존 스크리닝</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -226,6 +226,11 @@ export function ModelPredictions() {
                         <TableCell>
                           <p className="font-semibold text-foreground">{candidate.stock_name || "-"}</p>
                           <p className="mt-0.5 text-[11px] text-muted-foreground">{candidate.ticker} · {candidate.market}</p>
+                        </TableCell>
+                        <TableCell className="max-w-56">
+                          <p className="truncate" title={candidate.all_theme_names || candidate.primary_theme_name}>
+                            {candidate.primary_theme_name || "미분류"}
+                          </p>
                         </TableCell>
                         <ForwardHighCell row={forwardPriceMap.get(`${candidate.ticker}:1`)} />
                         <ForwardHighCell row={forwardPriceMap.get(`${candidate.ticker}:2`)} />
@@ -242,11 +247,6 @@ export function ModelPredictions() {
                           {formatPercent(candidate.pred_max_downside_1d)}
                         </TableCell>
                         <TableCell><Badge variant="secondary">{confidenceLabel(candidate.confidence)}</Badge></TableCell>
-                        <TableCell className="max-w-56">
-                          <p className="truncate" title={candidate.all_theme_names || candidate.primary_theme_name}>
-                            {candidate.primary_theme_name || "미분류"}
-                          </p>
-                        </TableCell>
                         <TableCell className="text-center">
                           {candidate.in_screening ? <Badge>포함</Badge> : <span className="text-muted-foreground">-</span>}
                         </TableCell>
