@@ -1,11 +1,10 @@
 import { useMemo } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { fetchKrx, parseNum, formatNum, getDirection } from "@/lib/krx-api";
 import { IndexData, KRX_ENDPOINTS } from "@/types/krx";
-import { IndexCard } from "./IndexCard";
+import { IndexCandlestickChart, parseIndexPrice } from "./IndexCandlestickChart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 // ── Component ──
 interface HomeDashboardProps {
@@ -66,6 +65,9 @@ export function HomeDashboard({ basDd, dateLoading }: HomeDashboardProps) {
         rows.push({
           date: found.BAS_DD,
           close: parseNum(found.CLSPRC_IDX),
+          open: parseIndexPrice(found.OPNPRC_IDX),
+          high: parseIndexPrice(found.HGPRC_IDX),
+          low: parseIndexPrice(found.LWPRC_IDX),
           change: parseNum(found.CMPPREVDD_IDX),
           changeRate: parseNum(found.FLUC_RT),
         });
@@ -86,22 +88,7 @@ export function HomeDashboard({ basDd, dateLoading }: HomeDashboardProps) {
 
   const isLoading = dateLoading || kospiQueries.some((q) => q.isLoading) || kosdaqQueries.some((q) => q.isLoading);
 
-  // Chart data (reverse to show oldest→newest)
-  const chartData = useMemo(() => {
-    const map = new Map<string, { date: string; KOSPI?: number; KOSDAQ?: number; KOSPI200?: number }>();
-    for (const r of kospiHistory) map.set(r.date, { date: r.date, KOSPI: r.close });
-    for (const r of kosdaqHistory) {
-      const existing = map.get(r.date) || { date: r.date };
-      existing.KOSDAQ = r.close;
-      map.set(r.date, existing);
-    }
-    for (const r of kospi200History) {
-      const existing = map.get(r.date) || { date: r.date };
-      existing.KOSPI200 = r.close;
-      map.set(r.date, existing);
-    }
-    return Array.from(map.values()).reverse();
-  }, [kospiHistory, kosdaqHistory, kospi200History]);
+
 
   return (
     <div className="space-y-4 p-3 sm:space-y-6 sm:p-6">
@@ -118,11 +105,11 @@ export function HomeDashboard({ basDd, dateLoading }: HomeDashboardProps) {
       </div>
 
       {/* Index Charts – 3-column grid */}
-      {chartData.length > 1 && (
+      {kospiHistory.length + kosdaqHistory.length + kospi200History.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <SingleIndexChart title="KOSPI" data={chartData} dataKey="KOSPI" stroke="#2563eb" />
-          <SingleIndexChart title="KOSDAQ" data={chartData} dataKey="KOSDAQ" stroke="#10b981" />
-          <SingleIndexChart title="KOSPI200" data={chartData} dataKey="KOSPI200" stroke="#f59e0b" />
+          <IndexCandlestickChart title="KOSPI" rows={kospiHistory} />
+          <IndexCandlestickChart title="KOSDAQ" rows={kosdaqHistory} />
+          <IndexCandlestickChart title="KOSPI200" rows={kospi200History} />
         </div>
       )}
 
@@ -140,48 +127,11 @@ export function HomeDashboard({ basDd, dateLoading }: HomeDashboardProps) {
 }
 
 // ── Single Index Chart ──
-function SingleIndexChart({
-  title,
-  data,
-  dataKey,
-  stroke,
-}: {
-  title: string;
-  data: { date: string; KOSPI?: number; KOSDAQ?: number; KOSPI200?: number }[];
-  dataKey: string;
-  stroke: string;
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-xs font-bold text-foreground mb-3">{title}</h3>
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-          <XAxis
-            dataKey="date"
-            tick={{ fontSize: 10 }}
-            stroke="hsl(var(--muted-foreground))"
-            tickFormatter={(v: string) => `${v.slice(4, 6)}.${v.slice(6, 8)}`}
-          />
-          <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" domain={["auto", "auto"]} />
-          <Tooltip
-            contentStyle={{
-              background: "hsl(var(--card))",
-              border: "1px solid hsl(var(--border))",
-              borderRadius: "8px",
-              fontSize: "12px",
-            }}
-            labelFormatter={(v: string) => `${v.slice(0, 4)}.${v.slice(4, 6)}.${v.slice(6, 8)}`}
-          />
-          <Line type="monotone" dataKey={dataKey} stroke={stroke} dot={false} strokeWidth={2} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 // ── Types ──
 interface IndexHistoryRow {
+  open: number | null;
+  high: number | null;
+  low: number | null;
   date: string;
   close: number;
   change: number;
